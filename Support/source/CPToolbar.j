@@ -58,7 +58,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
 /*!
     @ingroup appkit
     @class CPToolbar
-    
+
     A CPToolbar is displayed at the top of a window with multiple
     buttons (tools) that offer the user quick access to features.
 
@@ -73,7 +73,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
     Called to obtain the toolbar's default item identifiers. Required.
     @param toolbar the toolbar to obtain identifiers for
     @return an array of default item identifiers in the order on the toolbar
-    
+
     @delegate - (CPToolbarItem)toolbar:(CPToolbar)toolbar itemForItemIdentifier:(CPString)itemIdentifier willBeInsertedIntoToolbar:(BOOL)flag;
     Called to obtain a toolbar item. Required.
     @param toolbar the toolbar the item belongs to
@@ -89,19 +89,19 @@ var CPToolbarConfigurationsByIdentifier = nil;
     BOOL                    _showsBaselineSeparator;
     BOOL                    _allowsUserCustomization;
     BOOL                    _isVisible;
-    
+
     id                      _delegate;
-    
+
     CPArray                 _itemIdentifiers;
-    
+
     CPDictionary            _identifiedItems;
     CPArray                 _defaultItems;
     CPArray                 _allowedItems;
     CPArray                 _selectableItems;
-    
+
     CPArray                 _items;
     CPArray                 _itemsSortedByVisibilityPriority;
-    
+
     CPView                  _toolbarView;
     CPWindow                _window;
 }
@@ -111,7 +111,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
 {
     if (self != [CPToolbar class])
         return;
-        
+
     CPToolbarsByIdentifier = [CPDictionary dictionary];
     CPToolbarConfigurationsByIdentifier = [CPDictionary dictionary];
 }
@@ -120,13 +120,13 @@ var CPToolbarConfigurationsByIdentifier = nil;
 + (void)_addToolbar:(CPToolbar)toolbar forIdentifier:(CPString)identifier
 {
     var toolbarsSharingIdentifier = [CPToolbarsByIdentifier objectForKey:identifier];
-    
+
     if (!toolbarsSharingIdentifier)
     {
         toolbarsSharingIdentifier = []
         [CPToolbarsByIdentifier setObject:toolbarsSharingIdentifier forKey:identifier];
     }
-        
+
     [toolbarsSharingIdentifier addObject:toolbar];
 }
 
@@ -143,17 +143,17 @@ var CPToolbarConfigurationsByIdentifier = nil;
 - (id)initWithIdentifier:(CPString)anIdentifier
 {
     self = [super init];
-    
+
     if (self)
     {
         _items = [];
-        
+
         _identifier = anIdentifier;
         _isVisible = YES;
-    
+
         [CPToolbar _addToolbar:self forIdentifier:_identifier];
     }
-    
+
     return self;
 }
 
@@ -163,7 +163,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
 */
 - (void)setDisplayMode:(CPToolbarDisplayMode)aDisplayMode
 {
-    
+
 }
 
 /*!
@@ -198,7 +198,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
 {
     if (_isVisible === aFlag)
         return;
-    
+
     _isVisible = aFlag;
 
     [_window _noteToolbarChanged];
@@ -220,11 +220,11 @@ var CPToolbarConfigurationsByIdentifier = nil;
 */
 - (void)setDelegate:(id)aDelegate
 {
-    if (_delegate == aDelegate)
+    if (_delegate === aDelegate)
         return;
-        
+
     _delegate = aDelegate;
-    
+
     [self _reloadToolbarItems];
 }
 
@@ -240,57 +240,68 @@ var CPToolbarConfigurationsByIdentifier = nil;
     if (!_toolbarView)
     {
         _toolbarView = [[_CPToolbarView alloc] initWithFrame:CPRectMake(0.0, 0.0, 1200.0, 59.0)];
-        
+
         [_toolbarView setToolbar:self];
         [_toolbarView setAutoresizingMask:CPViewWidthSizable];
         [_toolbarView reloadToolbarItems];
     }
-    
+
     return _toolbarView;
 }
 
 /* @ignore */
 - (void)_reloadToolbarItems
 {
-    if (!_delegate)
-        return;
+    // As of OS X 10.5 (Leopard), toolbar items can be set in IB and a
+    // toolbar delegate is optional. Toolbar items can be combined from
+    // both IB and a delegate (see Apple's NSToolbar guide for IB, for more details).
 
-    var count = [_itemIdentifiers count];
-    
-    if (!count)
+    // _defaultItems may have been loaded from Cib
+    _itemIdentifiers = [_defaultItems valueForKey:@"itemIdentifier"] || [];
+
+    if (_delegate)
     {
-         _itemIdentifiers = [[_delegate toolbarDefaultItemIdentifiers:self] mutableCopy];
-         count = [_itemIdentifiers count];
+        var itemIdentifiersFromDelegate = [[_delegate toolbarDefaultItemIdentifiers:self] mutableCopy];
+
+        if (itemIdentifiersFromDelegate)
+            _itemIdentifiers = [_itemIdentifiers arrayByAddingObjectsFromArray:itemIdentifiersFromDelegate];
     }
+
+    var index = 0,
+        count = [_itemIdentifiers count];
 
     _items = [];
 
-    var index = 0;
-    
     for (; index < count; ++index)
     {
         var identifier = _itemIdentifiers[index],
             item = [CPToolbarItem _standardItemWithItemIdentifier:identifier];
-        
+
+        // May come from a Cib.
         if (!item)
+            item = [_identifiedItems objectForKey:identifier];
+
+        if (!item && _delegate)
             item = [_delegate toolbar:self itemForItemIdentifier:identifier willBeInsertedIntoToolbar:YES];
-        
+
         item = [item copy];
-        
-        if (item == nil)
+
+        if (item === nil)
             [CPException raise:CPInvalidArgumentException
-                         reason:sprintf(@"_delegate %s returned nil toolbar item returned for identifier %s", _delegate, identifier)];
-            
+                         reason:@"Toolbar delegate " + _delegate + " returned nil toolbar item for identifier \"" + identifier + "\""];
+
+        item._toolbar = self;
+
         [_items addObject:item];
     }
-  
+
 //    _items = [[self _defaultToolbarItems] mutableCopy];
-    
+
     // Store items sorted by priority.  We want items to be removed first at the end of the array,
     // items to be removed last at the front.
-    
+
     _itemsSortedByVisibilityPriority = [_items sortedArrayUsingFunction:_CPToolbarItemVisibilityPriorityCompare context:NULL];
-    
+
     [_toolbarView reloadToolbarItems];
 }
 
@@ -339,9 +350,9 @@ var CPToolbarConfigurationsByIdentifier = nil;
             item = [[_delegate toolbar:self itemForItemIdentifier:identifier willBeInsertedIntoToolbar:toolbar] copy];
             if (!item)
                 [CPException raise:CPInvalidArgumentException
-                            reason:sprintf(@"_delegate %s returned nil toolbar item returned for identifier %s", _delegate, identifier)];
+                            reason:@"Toolbar delegate " + _delegate + " returned nil toolbar item for identifier " + identifier];
         }
-        
+
         [_identifiedItems setObject:item forKey:identifier];
     }
 
@@ -350,7 +361,7 @@ var CPToolbarConfigurationsByIdentifier = nil;
 
 /* @ignore */
 - (id)_itemsWithIdentifiers:(CPArray)identifiers
-{   
+{
     var items = [];
     for (var i = 0; i < identifiers.length; i++)
         [items addObject:[self _itemForItemIdentifier:identifiers[i] willBeInsertedIntoToolbar:NO]];
@@ -359,28 +370,62 @@ var CPToolbarConfigurationsByIdentifier = nil;
 }
 
 /* @ignore */
--(id)_defaultToolbarItems
+- (id)_defaultToolbarItems
 {
-    if (!_defaultItems)
-        if ([_delegate respondsToSelector:@selector(toolbarDefaultItemIdentifiers:)])
-            _defaultItems = [self _itemsWithIdentifiers:[_delegate toolbarDefaultItemIdentifiers:self]];
-    
+    if (!_defaultItems && [_delegate respondsToSelector:@selector(toolbarDefaultItemIdentifiers:)])
+    {
+        _defaultItems = [];
+
+        var identifiers = [_delegate toolbarDefaultItemIdentifiers:self],
+            index = 0,
+            count = [identifiers count];
+
+        for (; index < count; ++index)
+            [_defaultItems addObject:[self _itemForItemIdentifier:identifiers[index] willBeInsertedIntoToolbar:NO]];
+    }
+
     return _defaultItems;
+}
+
+/*!
+    Notifies the toolbar that an item has been changed. This will cause the toolbar to reload its items.
+    @param anItem the item that has been changed
+*/
+- (void)toolbarItemDidChange:(CPToolbarItem)anItem
+{
+    if ([_identifiedItems objectForKey:[anItem itemIdentifier]])
+        [_identifiedItems setObject:anItem forKey:[anItem itemIdentifier]];
+
+    var index = 0,
+        count = [_items count];
+
+    for (; index <= count; ++index)
+    {
+        var item = _items[index];
+
+        if ([item itemIdentifier] === [anItem itemIdentifier])
+        {
+            _items[index] = anItem;
+            _itemsSortedByVisibilityPriority = [_items sortedArrayUsingFunction:_CPToolbarItemVisibilityPriorityCompare context:NULL];
+
+            [_toolbarView reloadToolbarItems];
+        }
+    }
 }
 
 @end
 
 
-var CPToolbarIdentifierKey              = "CPToolbarIdentifierKey",
-    CPToolbarDisplayModeKey             = "CPToolbarDisplayModeKey",
-    CPToolbarShowsBaselineSeparatorKey  = "CPToolbarShowsBaselineSeparatorKey",
-    CPToolbarAllowsUserCustomizationKey = "CPToolbarAllowsUserCustomizationKey",
-    CPToolbarIsVisibleKey               = "CPToolbarIsVisibleKey",
-    CPToolbarDelegateKey                = "CPToolbarDelegateKey",
-    CPToolbarIdentifiedItemsKey         = "CPToolbarIdentifiedItemsKey",
-    CPToolbarDefaultItemsKey            = "CPToolbarDefaultItemsKey",
-    CPToolbarAllowedItemsKey            = "CPToolbarAllowedItemsKey",
-    CPToolbarSelectableItemsKey         = "CPToolbarSelectableItemsKey";
+var CPToolbarIdentifierKey              = @"CPToolbarIdentifierKey",
+    CPToolbarDisplayModeKey             = @"CPToolbarDisplayModeKey",
+    CPToolbarShowsBaselineSeparatorKey  = @"CPToolbarShowsBaselineSeparatorKey",
+    CPToolbarAllowsUserCustomizationKey = @"CPToolbarAllowsUserCustomizationKey",
+    CPToolbarIsVisibleKey               = @"CPToolbarIsVisibleKey",
+    CPToolbarDelegateKey                = @"CPToolbarDelegateKey",
+    CPToolbarIdentifiedItemsKey         = @"CPToolbarIdentifiedItemsKey",
+    CPToolbarDefaultItemsKey            = @"CPToolbarDefaultItemsKey",
+    CPToolbarAllowedItemsKey            = @"CPToolbarAllowedItemsKey",
+    CPToolbarSelectableItemsKey         = @"CPToolbarSelectableItemsKey";
 
 @implementation CPToolbar (CPCoding)
 
@@ -391,26 +436,39 @@ var CPToolbarIdentifierKey              = "CPToolbarIdentifierKey",
 - (id)initWithCoder:(CPCoder)aCoder
 {
     self = [super init];
-    
+
     if (self)
     {
-        _identifier                 = [aCoder decodeObjectForKey:CPToolbarIdentifierKey];
-        _displayMode                = [aCoder decodeIntForKey:CPToolbarDisplayModeKey];
-        _showsBaselineSeparator     = [aCoder decodeBoolForKey:CPToolbarShowsBaselineSeparatorKey];
-        _allowsUserCustomization    = [aCoder decodeBoolForKey:CPToolbarAllowsUserCustomizationKey];
-        _isVisible                  = [aCoder decodeBoolForKey:CPToolbarIsVisibleKey];
-        
-        _identifiedItems            = [aCoder decodeObjectForKey:CPToolbarIdentifiedItemsKey];
-        _defaultItems               = [aCoder decodeObjectForKey:CPToolbarDefaultItemsKey];
-        _allowedItems               = [aCoder decodeObjectForKey:CPToolbarAllowedItemsKey];
-        _selectableItems            = [aCoder decodeObjectForKey:CPToolbarSelectableItemsKey];
-        
+        _identifier = [aCoder decodeObjectForKey:CPToolbarIdentifierKey];
+        _displayMode = [aCoder decodeIntForKey:CPToolbarDisplayModeKey];
+        _showsBaselineSeparator = [aCoder decodeBoolForKey:CPToolbarShowsBaselineSeparatorKey];
+        _allowsUserCustomization = [aCoder decodeBoolForKey:CPToolbarAllowsUserCustomizationKey];
+        _isVisible = [aCoder decodeBoolForKey:CPToolbarIsVisibleKey];
+
+        _identifiedItems = [aCoder decodeObjectForKey:CPToolbarIdentifiedItemsKey];
+        _defaultItems = [aCoder decodeObjectForKey:CPToolbarDefaultItemsKey];
+        _allowedItems = [aCoder decodeObjectForKey:CPToolbarAllowedItemsKey];
+        _selectableItems = [aCoder decodeObjectForKey:CPToolbarSelectableItemsKey];
+
+        [[_identifiedItems allValues] makeObjectsPerformSelector:@selector(_setToolbar:) withObject:self];
+
         _items = [];
+
         [CPToolbar _addToolbar:self forIdentifier:_identifier];
-        
+
+        // This won't come from a Cib, but can come from manual encoding.
         [self setDelegate:[aCoder decodeObjectForKey:CPToolbarDelegateKey]];
+
+        // Because we don't know if a delegate will be set later (it is optional
+        // as of OS X 10.5), we need to call -_reloadToolbarItems here.
+        // In order to load any toolbar items that may have been configured in the
+        // Cib. Unfortunatelly this means that if there is a delegate
+        // specified, it will be read later and the resulting call to -setDelegate:
+        // will cause -_reloadToolbarItems] to run again :-(
+        // FIXME: Can we make this better?
+        [self _reloadToolbarItems];
     }
-    
+
     return self;
 }
 
@@ -420,18 +478,18 @@ var CPToolbarIdentifierKey              = "CPToolbarIdentifierKey",
 */
 - (void)encodeWithCoder:(CPCoder)aCoder
 {
-    [aCoder encodeObject:_identifier            forKey:CPToolbarIdentifierKey];
-    [aCoder encodeInt:_displayMode              forKey:CPToolbarDisplayModeKey];
-    [aCoder encodeBool:_showsBaselineSeparator  forKey:CPToolbarShowsBaselineSeparatorKey];
+    [aCoder encodeObject:_identifier forKey:CPToolbarIdentifierKey];
+    [aCoder encodeInt:_displayMode forKey:CPToolbarDisplayModeKey];
+    [aCoder encodeBool:_showsBaselineSeparator forKey:CPToolbarShowsBaselineSeparatorKey];
     [aCoder encodeBool:_allowsUserCustomization forKey:CPToolbarAllowsUserCustomizationKey];
-    [aCoder encodeBool:_isVisible               forKey:CPToolbarIsVisibleKey];
-    
-    [aCoder encodeObject:_identifiedItems       forKey:CPToolbarIdentifiedItemsKey];
-    [aCoder encodeObject:_defaultItems          forKey:CPToolbarDefaultItemsKey];
-    [aCoder encodeObject:_allowedItems          forKey:CPToolbarAllowedItemsKey];
-    [aCoder encodeObject:_selectableItems       forKey:CPToolbarSelectableItemsKey];
-    
-    [aCoder encodeConditionalObject:_delegate   forKey:CPToolbarDelegateKey];
+    [aCoder encodeBool:_isVisible forKey:CPToolbarIsVisibleKey];
+
+    [aCoder encodeObject:_identifiedItems forKey:CPToolbarIdentifiedItemsKey];
+    [aCoder encodeObject:_defaultItems forKey:CPToolbarDefaultItemsKey];
+    [aCoder encodeObject:_allowedItems forKey:CPToolbarAllowedItemsKey];
+    [aCoder encodeObject:_selectableItems forKey:CPToolbarSelectableItemsKey];
+
+    [aCoder encodeConditionalObject:_delegate forKey:CPToolbarDelegateKey];
 }
 
 @end
@@ -454,10 +512,10 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
 @implementation _CPToolbarView : CPView
 {
     CPToolbar           _toolbar;
-    
+
     CPIndexSet          _flexibleWidthIndexes;
     CPIndexSet          _visibleFlexibleWidthIndexes;
-    
+
     CPDictionary        _itemInfos;
     JSObject            _viewsForToolbarItems;
 
@@ -467,7 +525,7 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
     CPPopUpButton       _additionalItemsButton;
     CPColor             _labelColor;
     CPColor             _labelShadowColor;
-    
+
     float               _minWidth;
 
     BOOL                _FIXME_isHUD;
@@ -475,11 +533,11 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
 
 + (void)initialize
 {
-    if (self != [_CPToolbarView class])
+    if (self !== [_CPToolbarView class])
         return;
-    
+
     var bundle = [CPBundle bundleForClass:self];
-    
+
     _CPToolbarViewExtraItemsImage = [[CPImage alloc] initWithContentsOfFile: [bundle pathForResource:"_CPToolbarView/_CPToolbarViewExtraItemsImage.png"] size: CPSizeMake(10.0, 15.0)];
 
     _CPToolbarViewExtraItemsAlternateImage = [[CPImage alloc] initWithContentsOfFile: [bundle pathForResource:"_CPToolbarView/_CPToolbarViewExtraItemsAlternateImage.png"] size:CGSizeMake(10.0, 15.0)];
@@ -488,23 +546,23 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
 - (id)initWithFrame:(CGRect)aFrame
 {
     self = [super initWithFrame:aFrame];
-    
+
     if (self)
     {
         _minWidth = 0;
-        
+
         _labelColor = [CPColor blackColor];
         _labelShadowColor = [CPColor colorWithWhite:1.0 alpha:0.75];
-        
+
         _additionalItemsButton = [[CPPopUpButton alloc] initWithFrame:CGRectMake(0.0, 0.0, 10.0, 15.0) pullsDown:YES];
         [_additionalItemsButton setBordered:NO];
 
         [_additionalItemsButton setImagePosition:CPImageOnly];
         [[_additionalItemsButton menu] setShowsStateColumn:NO];
-        
+
         [_additionalItemsButton setAlternateImage:_CPToolbarViewExtraItemsAlternateImage];
     }
-    
+
     return self;
 }
 
@@ -551,17 +609,17 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
         minWidth = _minWidth,
         // FIXME: This should be a CPSet.
         invisibleItemsSortedByPriority = [];
-    
+
     _visibleItems = items;
 
-    // We only have hidden items if our actual width is smaller than our 
+    // We only have hidden items if our actual width is smaller than our
     // minimum width for hiding items.
     if (itemsWidth < minWidth)
     {
         itemsWidth -= TOOLBAR_EXTRA_ITEMS_WIDTH;
-                
+
         _visibleItems = [_visibleItems copy];
-        
+
         var itemsSortedByVisibilityPriority = [_toolbar itemsSortedByVisibilityPriority],
             count = itemsSortedByVisibilityPriority.length;
 
@@ -620,18 +678,18 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
 
         [view setHidden:NO];
     }
-    
+
     var remainingSpace = itemsWidth - minWidth,
         proportionate = 0.0;
 
-    // Continue to distribute space proportionately while we have it, 
-    // and there are flexible items left that want it. (Those with max 
+    // Continue to distribute space proportionately while we have it,
+    // and there are flexible items left that want it. (Those with max
     // widths may eventually not want it anymore).
     while (remainingSpace && [flexibleItemIndexes count])
     {
         // Divy out the space.
         proportionate += remainingSpace / [flexibleItemIndexes count];
-        
+
         // Reset the remaining space to 0
         remainingSpace = 0.0;
 
@@ -654,7 +712,7 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
             [view setFrameSize:CGSizeMake(constrainedWidth, height)];
         }
     }
-    
+
     // Now that all the visible items are the correct width, give them their final frames.
     var index = 0,
         count = _visibleItems.length,
@@ -676,9 +734,9 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
     {
         var index = 0,
             count = [items count];
-            
+
         _invisibleItems = [];
-        
+
         for (; index < count; ++index)
         {
             var item = items[index];
@@ -732,18 +790,17 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
             hasNonSeparatorItem = YES;
 
             [_additionalItemsButton addItemWithTitle:[item label]];
-            
+
             var menuItem = [_additionalItemsButton itemArray][index + 1];
-            
+
             [menuItem setImage:[item image]];
-            
+
             [menuItem setTarget:[item target]];
             [menuItem setAction:[item action]];
         }
     }
     else
         [_additionalItemsButton removeFromSuperview];
-    
 }
 
 - (void)reloadToolbarItems
@@ -751,14 +808,14 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
     // Get rid of all our current subviews.
     var subviews = [self subviews],
         count = subviews.length;
-    
+
     while (count--)
         [subviews[count] removeFromSuperview];
-    
+
     // Populate with new subviews.
     var items = [_toolbar items],
         index = 0;
-    
+
     count = items.length;
 
     _minWidth = TOOLBAR_ITEM_MARGIN;
@@ -774,7 +831,7 @@ var _CPToolbarItemInfoMake = function(anIndex, aView, aLabel, aMinWidth)
 
         _minWidth += [view minSize].width + TOOLBAR_ITEM_MARGIN;
     }
-    
+
     [self tile];
 }
 
@@ -785,13 +842,13 @@ var _CPToolbarItemVisibilityPriorityCompare = function(lhs, rhs)
 {
     var lhsVisibilityPriority = [lhs visibilityPriority],
         rhsVisibilityPriority = [rhs visibilityPriority];
-        
+
     if (lhsVisibilityPriority == rhsVisibilityPriority)
         return CPOrderedSame;
-    
+
     if (lhsVisibilityPriority > rhsVisibilityPriority)
         return CPOrderedAscending;
-    
+
     return CPOrderedDescending;
 }
 
@@ -837,7 +894,16 @@ var TOP_MARGIN      = 5.0,
 
         _toolbar = aToolbar;
 
-        [_toolbarItem addObserver:self forKeyPath:"enabled" options:0 context:NULL];
+        var keyPaths = [@"label", @"image", @"alternateImage", @"minSize", @"maxSize", @"target", @"action", @"enabled"],
+            index = 0,
+            count = [keyPaths count];
+
+        for (; index < count; ++index)
+            [_toolbarItem
+                addObserver:self
+                 forKeyPath:keyPaths[index]
+                    options:0
+                    context:NULL];
     }
 
     return self;
@@ -918,6 +984,8 @@ var TOP_MARGIN      = 5.0,
     [_labelField setStringValue:[_toolbarItem label]];
     [_labelField sizeToFit]; // FIXME
 
+    [self setEnabled:[_toolbarItem isEnabled]];
+
     _labelSize = [_labelField frame].size;
 
     _minSize = CGSizeMake(MAX(_labelSize.width, minSize.width), _labelSize.height + minSize.height + LABEL_MARGIN + TOP_MARGIN);
@@ -957,7 +1025,14 @@ var TOP_MARGIN      = 5.0,
 - (void)mouseDown:(CPEvent)anEvent
 {
     if ([_toolbarItem view])
-        return;
+        return [[self nextResponder] mouseDown:anEvent];
+
+    var identifier = [_toolbarItem itemIdentifier];
+
+    if (identifier === CPToolbarSpaceItemIdentifier ||
+        identifier === CPToolbarFlexibleSpaceItemIdentifier ||
+        identifier === CPToolbarSeparatorItemIdentifier)
+        return [[self nextResponder] mouseDown:anEvent];
 
     [super mouseDown:anEvent];
 }
@@ -1020,14 +1095,27 @@ var TOP_MARGIN      = 5.0,
     [_labelField setTextShadowColor:[self FIXME_labelShadowColor]];
 }
 
+- (void)sendAction:(SEL)anAction to:(id)aSender
+{
+    [CPApp sendAction:anAction to:aSender from:_toolbarItem];
+}
+
 - (void)observeValueForKeyPath:(CPString)aKeyPath
                       ofObject:(id)anObject
                         change:(CPDictionary)aChange
                        context:(id)aContext
 {
-    // FIXME: Not clear if -synchronizeWindowTitleWithDocumentName is the best way to go.
     if (aKeyPath === "enabled")
         [self setEnabled:[anObject isEnabled]];
+
+    else if (aKeyPath === @"target")
+        [self setTarget:[anObject target]];
+
+    else if (aKeyPath === @"action")
+        [self setAction:[anObject action]];
+
+    else
+        [self updateFromItem];
 }
 
 @end

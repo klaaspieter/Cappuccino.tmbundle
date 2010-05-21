@@ -321,7 +321,7 @@
 */
 - (CPIndexSet)selectionIndexes
 {
-    return _selectionIndexes;
+    return [_selectionIndexes copy];
 }
 
 /* @ignore */
@@ -333,6 +333,8 @@
     while (count--)
     {
         [[_items[count] view] removeFromSuperview];
+        [_items[count] setSelected:NO];
+
         _cachedItems.push(_items[count]);
     }
     
@@ -351,7 +353,11 @@
     
         [self addSubview:[_items[index] view]];
     }
-    
+
+    index = CPNotFound;
+    while ((index = [_selectionIndexes indexGreaterThanIndex:index]) != CPNotFound)
+        [_items[index] setSelected:YES];
+
     [self tile];
 }
 
@@ -591,6 +597,10 @@
     if (![_selectionIndexes count])
         return;
 
+    if ([_delegate respondsToSelector:@selector(collectionView:canDragItemsAtIndexes:withEvent:)] &&
+        ![_delegate collectionView:self canDragItemsAtIndexes:_selectionIndexes withEvent:_mouseDownEvent])
+        return;
+
     // Set up the pasteboard
     var dragTypes = [_delegate collectionView:self dragTypesForItemsAtIndexes:_selectionIndexes];
 
@@ -668,6 +678,124 @@
 - (id)delegate
 {
     return _delegate;
+}
+
+- (CPCollectionViewItem)itemAtIndex:(unsigned)anIndex
+{
+    return [_items objectAtIndex:anIndex];
+}
+
+- (CGRect)frameForItemAtIndex:(unsigned)anIndex
+{
+    return [[[self itemAtIndex:anIndex] view] frame];
+}
+
+- (CGRect)frameForItemsAtIndexes:(CPIndexSet)anIndexSet
+{
+    var indexArray = [],
+        frame = CGRectNull;
+
+    [anIndexSet getIndexes:indexArray maxCount:-1 inIndexRange:nil];
+
+    var index = 0,
+        count = [indexArray count];
+
+    for (; index < count; ++index)
+        frame = CGRectUnion(frame, [self rectForItemAtIndex:indexArray[index]]);
+
+    return frame;
+}
+
+@end
+
+@implementation CPCollectionView (KeyboardInteraction)
+
+- (void)_scrollToSelection
+{
+    var frame = [self frameForItemsAtIndexes:[self selectionIndexes]];
+
+    if (!CGRectIsNull(frame))
+        [self scrollRectToVisible:frame];
+}
+
+- (void)moveLeft:(id)sender
+{
+    var index = [[self selectionIndexes] firstIndex];
+    if (index === CPNotFound) 
+        index = [[self items] count];
+
+    index = MAX(index - 1, 0);
+
+    [self setSelectionIndexes:[CPIndexSet indexSetWithIndex:index]];
+    [self _scrollToSelection];
+}
+
+- (void)moveRight:(id)sender
+{
+    var index = MIN([[self selectionIndexes] firstIndex] + 1, [[self items] count]-1);
+
+    [self setSelectionIndexes:[CPIndexSet indexSetWithIndex:index]];
+    [self _scrollToSelection];
+}
+
+- (void)moveDown:(id)sender
+{
+    var index = MIN([[self selectionIndexes] firstIndex] + [self numberOfColumns], [[self items] count]-1);
+
+    [self setSelectionIndexes:[CPIndexSet indexSetWithIndex:index]];
+    [self _scrollToSelection];
+}
+
+- (void)moveUp:(id)sender
+{
+    var index = [[self selectionIndexes] firstIndex];
+    if (index == CPNotFound) 
+        index = [[self items] count];
+
+    index = MAX(0, index - [self numberOfColumns]);
+
+    [self setSelectionIndexes:[CPIndexSet indexSetWithIndex:index]];
+    [self _scrollToSelection];
+}
+
+- (void)deleteBackward:(id)sender
+{
+    if ([[self delegate] respondsToSelector:@selector(collectionView:shouldDeleteItemsAtIndexes:)])
+    {
+        [[self delegate] collectionView:self shouldDeleteItemsAtIndexes:[self selectionIndexes]];
+
+        var index = [[self selectionIndexes] firstIndex];
+        if (index > [[self content] count]-1)
+            [self setSelectionIndexes:[CPIndexSet indexSetWithIndex:[[self content] count]-1]];
+
+        [self _scrollToSelection];
+        [self setNeedsDisplay:YES];
+    }
+}
+
+- (void)keyDown:(CPEvent)anEvent
+{
+    [self interpretKeyEvents:[anEvent]];
+}
+
+@end
+
+@implementation CPCollectionView (Deprecated)
+
+- (CGRect)rectForItemAtIndex:(int)anIndex
+{
+    _CPReportLenientDeprecation([self class], _cmd, @selector(frameForItemAtIndex:));
+
+    // Don't re-compute anything just grab the current frame
+    // This allows subclasses to override tile without messing this up.
+    return [self frameForItemAtIndex:anIndex];
+}
+
+- (CGRect)rectForItemsAtIndexes:(CPIndexSet)anIndexSet
+{
+    _CPReportLenientDeprecation([self class], _cmd, @selector(frameForItemsAtIndexes:));
+
+    return [self frameForItemsAtIndexes:anIndexSet];
 }
 
 @end

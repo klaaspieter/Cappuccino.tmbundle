@@ -24,18 +24,11 @@
 @import "CPControl.j"
 @import "CPStringDrawing.j"
 @import "CPCompatibility.j"
+@import "_CPImageAndTextView.j"
 
 #include "CoreGraphics/CGGeometry.h"
 #include "Platform/Platform.h"
 #include "Platform/DOM/CPDOMDisplayServer.h"
-
-
-CPLineBreakByWordWrapping       = 0;
-CPLineBreakByCharWrapping       = 1;
-CPLineBreakByClipping           = 2;
-CPLineBreakByTruncatingHead     = 3;
-CPLineBreakByTruncatingTail     = 4;
-CPLineBreakByTruncatingMiddle   = 5;
 
 CPTextFieldSquareBezel          = 0;    /*! A textfield bezel with a squared corners. */
 CPTextFieldRoundedBezel         = 1;    /*! A textfield bezel with rounded corners. */
@@ -55,11 +48,7 @@ var CPTextFieldDOMInputElement = nil,
     CPTextFieldInputIsActive = NO,
     CPTextFieldCachedSelectStartFunction = nil,
     CPTextFieldCachedDragFunction = nil,
-    
-    CPTextFieldBlurFunction = nil,
-    CPTextFieldKeyUpFunction = nil,
-    CPTextFieldKeyPressFunction = nil,
-    CPTextFieldKeyDownFunction = nil;
+    CPTextFieldBlurFunction = nil;
     
 #endif
 
@@ -173,7 +162,7 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
 
 + (id)themeAttributes
 {
-    return [CPDictionary dictionaryWithObjects:[_CGInsetMakeZero(), _CGInsetMake(2.0, 2.0, 2.0, 2.0), nil]
+    return [CPDictionary dictionaryWithObjects:[_CGInsetMakeZero(), _CGInsetMake(2.0, 2.0, 2.0, 2.0), [CPNull null]]
                                        forKeys:[@"bezel-inset", @"content-inset", @"bezel-color"]];
 }
 
@@ -245,10 +234,6 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
             CPTextFieldDOMPasswordInputElement.style.background = "transparent";
             CPTextFieldDOMPasswordInputElement.style.outline = "none";
             CPTextFieldDOMPasswordInputElement.type = "password";
-
-            CPTextFieldDOMPasswordInputElement.attachEvent("on" + CPDOMEventKeyUp, CPTextFieldKeyUpFunction);
-            CPTextFieldDOMPasswordInputElement.attachEvent("on" + CPDOMEventKeyDown, CPTextFieldKeyDownFunction);
-            CPTextFieldDOMPasswordInputElement.attachEvent("on" + CPDOMEventKeyPress, CPTextFieldKeyPressFunction);
 
             CPTextFieldDOMPasswordInputElement.onblur = CPTextFieldBlurFunction;
         }
@@ -498,6 +483,7 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
     window.setTimeout(function() 
     { 
         element.focus();
+        [self textDidFocus:[CPNotification notificationWithName:CPTextFieldDidFocusNotification object:self userInfo:nil]];
         CPTextFieldInputOwner = self;
     }, 0.0);
  
@@ -509,14 +495,12 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
 
     if (document.attachEvent)
     {
-        CPTextFieldCachedSelectStartFunction = document.body.onselectstart;
-        CPTextFieldCachedDragFunction = document.body.ondrag;
+        CPTextFieldCachedSelectStartFunction = [[self window] platformWindow]._DOMBodyElement.onselectstart;
+        CPTextFieldCachedDragFunction = [[self window] platformWindow]._DOMBodyElement.ondrag;
         
-        document.body.ondrag = function () {};
-        document.body.onselectstart = function () {};
+        [[self window] platformWindow]._DOMBodyElement.ondrag = function () {};
+        [[self window] platformWindow]._DOMBodyElement.onselectstart = function () {};
     }
-    
-    [self textDidFocus:[CPNotification notificationWithName:CPTextFieldDidFocusNotification object:self userInfo:nil]];
 #endif
 
     return YES;
@@ -556,8 +540,8 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
         CPTextFieldCachedSelectStartFunction = nil;
         CPTextFieldCachedDragFunction = nil;
         
-        document.body.ondrag = CPTextFieldCachedDragFunction
-        document.body.onselectstart = CPTextFieldCachedSelectStartFunction
+        [[self window] platformWindow]._DOMBodyElement.ondrag = CPTextFieldCachedDragFunction;
+        [[self window] platformWindow]._DOMBodyElement.onselectstart = CPTextFieldCachedSelectStartFunction;
     }
     
 #endif
@@ -574,6 +558,14 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
 
     [self textDidBlur:[CPNotification notificationWithName:CPTextFieldDidBlurNotification object:self userInfo:nil]];
 
+    return YES;
+}
+
+/*!
+    Text fields require panels to become key window, so this returns \c YES.
+*/
+- (BOOL)needsPanelToBecomeKey
+{
     return YES;
 }
 
@@ -639,6 +631,9 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
         else
             [[self window] selectNextKeyView:self];
 
+        if ([[[self window] firstResponder] respondsToSelector:@selector(selectText:)])
+            [[[self window] firstResponder] selectText:self];
+
         [[[self window] platformWindow] _propagateCurrentDOMEvent:NO];
     }
     else
@@ -688,9 +683,10 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
 - (void)setObjectValue:(id)aValue
 {
     [super setObjectValue:aValue];
-
+	
 #if PLATFORM(DOM)
-    if (CPTextFieldInputOwner === self)
+
+    if (CPTextFieldInputOwner === self || [[self window] firstResponder] === self)
         [self _inputElement].value = aValue;
 #endif
 
@@ -781,9 +777,149 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
 #if PLATFORM(DOM)
     var element = [self _inputElement];
     
-    if (element.parentNode === _DOMElement && ([self isEditable] || [self isSelectable]))
-        window.setTimeout(function() { element.select(); }, 0);
+    if (([self isEditable] || [self isSelectable]))
+    {
+        if ([[self window] firstResponder] === self)
+            window.setTimeout(function() { element.select(); }, 0);
+        else
+        {
+            [[self window] makeFirstResponder:self];
+            window.setTimeout(function() {[self selectText:sender];}, 0);
+        }
+    }
 #endif
+}
+
+- (void)copy:(id)sender
+{
+    if (![CPPlatform isBrowser])
+    {
+        var selectedRange = [self selectedRange];
+
+        if (selectedRange.length < 1)
+            return;
+
+        var pasteboard = [CPPasteboard generalPasteboard],
+            stringValue = [self stringValue],
+            stringForPasting = [stringValue substringWithRange:selectedRange];
+
+        [pasteboard declareTypes:[CPStringPboardType] owner:nil];
+        [pasteboard setString:stringForPasting forType:CPStringPboardType];
+    }
+}
+
+- (void)cut:(id)sender
+{
+    if (![CPPlatform isBrowser])
+    {
+        [self copy:sender];
+        [self deleteBackward:sender];
+    }
+}
+
+- (void)paste:(id)sender
+{
+    if (![CPPlatform isBrowser])
+    {
+        var pasteboard = [CPPasteboard generalPasteboard];
+
+        if (![[pasteboard types] containsObject:CPStringPboardType])
+            return;
+
+        [self deleteBackward:sender];
+
+        var selectedRange = [self selectedRange],
+            stringValue = [self stringValue],
+            pasteString = [pasteboard stringForType:CPStringPboardType],
+            newValue = [stringValue stringByReplacingCharactersInRange:selectedRange withString:pasteString];
+
+        [self setStringValue:newValue];
+        [self setSelectedRange:CPMakeRange(selectedRange.location+pasteString.length, 0)];
+    }
+}
+
+- (CPRange)selectedRange
+{
+    if ([[self window] firstResponder] !== self)
+        return CPMakeRange(0, 0);
+
+    // we wrap this in try catch because firefox will throw an exception in certain instances
+    try 
+    {
+        var inputElement = [self _inputElement],
+            selectionStart = inputElement.selectionStart,
+            selectionEnd = inputElement.selectionEnd;
+
+        if ([selectionStart isKindOfClass:CPNumber])
+            return CPMakeRange(selectionStart, selectionEnd - selectionStart);    
+
+        // browsers which don't support selectionStart/selectionEnd (aka IE).
+        var theDocument = inputElement.ownerDocument || inputElement.document,
+            selectionRange = theDocument.selection.createRange(),
+            range = inputElement.createTextRange();
+
+        if (range.inRange(selectionRange))
+        {
+            range.setEndPoint('EndToStart', selectionRange);
+            return CPMakeRange(range.text.length, selectionRange.text.length);
+        }
+    } 
+    catch (e) 
+    {
+        // fall through to the return
+    }
+
+    return CGMakeRange(0, 0);
+}
+
+- (void)setSelectedRange:(CPRange)aRange
+{
+    if (![[self window] firstResponder] === self)
+        return;
+
+    var inputElement = [self _inputElement];
+
+    try 
+    {
+        if ([inputElement.selectionStart isKindOfClass:CPNumber])
+        {
+            inputElement.selectionStart = aRange.location;
+            inputElement.selectionEnd = CPMaxRange(aRange);
+        }
+        else
+        {
+            // browsers which don't support selectionStart/selectionEnd (aka IE).
+            var theDocument = inputElement.ownerDocument || inputElement.document,
+                existingRange = theDocument.selection.createRange(),
+                range = inputElement.createTextRange();
+    
+            if (range.inRange(existingRange))
+            {
+                range.collapse(true);
+                range.move('character', aRange.location);
+                range.moveEnd('character', aRange.length);
+                range.select();
+            }
+        }
+    }
+    catch (e)
+    {
+    }
+}
+
+- (void)selectAll:(id)sender
+{
+    [self selectText:sender];
+}
+
+- (void)deleteBackward:(id)sender
+{
+    var selectedRange = [self selectedRange],
+        stringValue = [self stringValue],
+        newValue = [stringValue stringByReplacingCharactersInRange:selectedRange withString:""];
+
+    [self setStringValue:newValue];
+    [self setSelectedRange:CPMakeRange(selectedRange.location, 0)];
 }
 
 #pragma mark Setting the Delegate
@@ -901,6 +1037,8 @@ CPTextFieldStatePlaceholder = CPThemeState("placeholder");
     {
         var view = [[_CPImageAndTextView alloc] initWithFrame:_CGRectMakeZero()];
         //[view setImagePosition:CPNoImage];
+        
+        [view setHitTests:NO];
         
         return view;
     }

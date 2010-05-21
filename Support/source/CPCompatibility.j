@@ -31,6 +31,11 @@ CPKHTMLBrowserEngine                    = 3;
 CPOperaBrowserEngine                    = 4;
 CPWebKitBrowserEngine                   = 5;
 
+// Operating Systems
+CPMacOperatingSystem                    = 0;
+CPWindowsOperatingSystem                = 1;
+CPOtherOperatingSystem                  = 2;
+
 // Features
 CPCSSRGBAFeature                        = 1 << 5;
 
@@ -104,7 +109,10 @@ else if (USER_AGENT.indexOf("AppleWebKit/") != -1)
     // Features we can only be sure of with WebKit (no known independent tests)
     PLATFORM_FEATURES |= CPCSSRGBAFeature;
     PLATFORM_FEATURES |= CPHTMLContentEditableFeature;
-    PLATFORM_FEATURES |= CPHTMLDragAndDropFeature;
+
+    if (USER_AGENT.indexOf("Chrome") === -1)
+        PLATFORM_FEATURES |= CPHTMLDragAndDropFeature;
+
     PLATFORM_FEATURES |= CPJavascriptClipboardEventsFeature;
     PLATFORM_FEATURES |= CPJavascriptClipboardAccessFeature;
     PLATFORM_FEATURES |= CPJavaScriptShadowFeature;
@@ -183,25 +191,37 @@ function CPFeatureIsCompatible(aFeature)
 
 function CPBrowserIsEngine(anEngine)
 {
-    return PLATFORM_ENGINE == anEngine;
+    return PLATFORM_ENGINE === anEngine;
 }
 
-if (USER_AGENT.indexOf("Mac") != -1)
+function CPBrowserIsOperatingSystem(anOperatingSystem)
 {
+    return OPERATING_SYSTEM === anOperatingSystem;
+}
+
+OPERATING_SYSTEM = CPOtherOperatingSystem;
+
+if (USER_AGENT.indexOf("Mac") !== -1)
+{
+    OPERATING_SYSTEM = CPMacOperatingSystem;
+
     CPPlatformActionKeyMask = CPCommandKeyMask;
 
-    CPUndoKeyEquivalent = @"Z";
+    CPUndoKeyEquivalent = @"z";
     CPRedoKeyEquivalent = @"Z";
 
     CPUndoKeyEquivalentModifierMask = CPCommandKeyMask;
-    CPRedoKeyEquivalentModifierMask = CPCommandKeyMask | CPShiftKeyMask;
+    CPRedoKeyEquivalentModifierMask = CPCommandKeyMask;
 }
 else
 {
+    if (USER_AGENT.indexOf("Windows") !== -1)
+        OPERATING_SYSTEM = CPWindowsOperatingSystem;
+
     CPPlatformActionKeyMask = CPControlKeyMask;
 
-    CPUndoKeyEquivalent = @"Z";
-    CPRedoKeyEquivalent = @"Y";
+    CPUndoKeyEquivalent = @"z";
+    CPRedoKeyEquivalent = @"y";
 
     CPUndoKeyEquivalentModifierMask = CPControlKeyMask;
     CPRedoKeyEquivalentModifierMask = CPControlKeyMask;

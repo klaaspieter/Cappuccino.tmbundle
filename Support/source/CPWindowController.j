@@ -144,7 +144,7 @@
 {
     var theWindow = [self window];
 
-	if ([theWindow respondsToSelector:@selector(becomesKeyOnlyIfNeeded)] && [theWindow becomesKeyOnlyIfNeeded])
+    if ([theWindow respondsToSelector:@selector(becomesKeyOnlyIfNeeded)] && [theWindow becomesKeyOnlyIfNeeded])
         [theWindow orderFront:aSender];
     else
         [theWindow makeKeyAndOrderFront:aSender];
@@ -173,6 +173,14 @@
 
         if (_window === nil && [_cibOwner isKindOfClass:[CPDocument class]])
             [self setWindow:[_cibOwner valueForKey:@"window"]];
+        
+        if (!_window) 
+        {
+            var reason = [CPString stringWithFormat:@"Window for %@ could not be loaded from Cib or no window specified. \
+                                                        Override loadWindow to load the window manually.", self];
+
+            [CPException raise:CPInternalInconsistencyException reason:reason];
+        }
 
         [self windowDidLoad];
         [_document windowControllerDidLoadCib:self];
@@ -312,25 +320,6 @@
 - (CPArray)documents
 {
     return _documents;
-}
-
-- (void)setViewController:(CPViewController)aViewController
-{
-    var containerView = [self viewControllerContainerView] || [[self window] contentView],
-        view = [_viewController view],
-        frame = view ? [view frame] : [containerView bounds];
-
-    [view removeFromSuperview];
-
-    _viewController = aViewController;
-
-    view = [_viewController view];
-
-    if (view)
-    {
-        [view setFrame:frame];
-        [containerView addSubview:view];
-    }
 }
 
 - (void)setViewControllerContainerView:(CPView)aView

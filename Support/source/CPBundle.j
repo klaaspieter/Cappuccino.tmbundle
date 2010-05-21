@@ -23,50 +23,64 @@
 @import "CPObject.j"
 @import "CPDictionary.j"
 
-@import "CPURLRequest.j"
-
-/*! 
+/*!
     @class CPBundle
     @ingroup foundation
     @brief Groups information about an application's code & resources.
 */
 
+var CPBundlesForURLStrings = { };
+
 @implementation CPBundle : CPObject
 {
+    CFBundle    _bundle;
+    id          _delegate;
 }
 
-+ (id)alloc
++ (CPBundle)bundleWithURL:(CPURL)aURL
 {
-    return new objj_bundle;
+    return [[self alloc] initWithURL:aURL];
 }
 
 + (CPBundle)bundleWithPath:(CPString)aPath
 {
-    return objj_getBundleWithPath(aPath);
+    return [self bundleWithURL:aPath];
 }
 
 + (CPBundle)bundleForClass:(Class)aClass
 {
-    return objj_bundleForClass(aClass);
+    return [self bundleWithURL:CFBundle.bundleForClass(aClass).bundleURL()];
 }
 
 + (CPBundle)mainBundle
 {
-    return [CPBundle bundleWithPath:"Info.plist"];
+    return [CPBundle bundleWithPath:CFBundle.mainBundle().bundleURL()];
+}
+
+- (id)initWithURL:(CPURL)aURL
+{
+    aURL = new CFURL(aURL);
+
+    var URLString = aURL.absoluteString(),
+        existingBundle = CPBundlesForURLStrings[URLString];
+
+    if (existingBundle)
+        return existingBundle;
+
+    self = [super init];
+
+    if (self)
+    {
+        _bundle = new CFBundle(aURL);
+        CPBundlesForURLStrings[URLString] = self;
+    }
+
+    return self;
 }
 
 - (id)initWithPath:(CPString)aPath
 {
-    self = [super init];
-    
-    if (self)
-    {
-        path = aPath;
-        
-        objj_setBundleForPath(path, self);
-    }
-    
-    return self;
+    return [self initWithURL:aPath];
 }
 
 - (Class)classNamed:(CPString)aString
@@ -74,124 +88,95 @@
     // ???
 }
 
+- (CPURL)bundleURL
+{
+    return _bundle.bundleURL();
+}
+
 - (CPString)bundlePath
 {
-    return [path stringByDeletingLastPathComponent];
+    return [[self bundleURL] path];
 }
 
 - (CPString)resourcePath
 {
-    var resourcePath = [self bundlePath];
-    
-    if (resourcePath.length)
-        resourcePath += '/';
-        
-    return resourcePath + "Resources";
+    return [[self resourceURL] path];
+}
+
+- (CPURL)resourceURL
+{
+    return _bundle.resourcesDirectoryURL();
 }
 
 - (Class)principalClass
 {
     var className = [self objectForInfoDictionaryKey:@"CPPrincipalClass"];
-    
-    //[self load];
-    
-    return className ? CPClassFromString(className) : Nil;
-}
 
-+ (CPString)mostEligibleEnvironmentFromArray:(CPArray)environments
-{
-    return objj_mostEligibleEnvironmentFromArray(environments);
+    //[self load];
+
+    return className ? CPClassFromString(className) : Nil;
 }
 
 - (CPString)pathForResource:(CPString)aFilename
 {
-    var actualPath = [self resourcePath] + '/' + aFilename,
-        mappedPath = _URIMap["Resources/" + aFilename];
-
-    if (mappedPath)
-        return mappedPath;
-
-    return actualPath;
+    return _bundle.pathForResource(aFilename);
 }
 
 - (CPDictionary)infoDictionary
 {
-    return info;
+    return _bundle.infoDictionary();
 }
 
 - (id)objectForInfoDictionaryKey:(CPString)aKey
 {
-    return [info objectForKey:aKey];
+    return _bundle.valueForInfoDictionaryKey(aKey);
 }
 
 //
 
 - (void)loadWithDelegate:(id)aDelegate
 {
-    self._delegate = aDelegate;
-    self._infoConnection = [CPURLConnection connectionWithRequest:[CPURLRequest requestWithURL:[self bundlePath] + "/Info.plist"] delegate:self];
+    _delegate = aDelegate;
+
+    _bundle.addEventListener("load", function()
+    {
+        [_delegate bundleDidFinishLoading:self];
+    });
+
+    _bundle.addEventListener("error", function()
+    {
+        CPLog.error("Could not find bundle: " + self);
+    });
+
+    _bundle.load(YES);
 }
 
-- (CPArray)supportedEnvironments
+- (CPArray)staticResourceURLs
 {
-    return [self objectForInfoDictionaryKey:"CPBundleEnvironments"] || ["ObjJ"];
+    var staticResourceURLs = [],
+        staticResources = _bundle.staticResources(),
+        index = 0,
+        count = [staticResources count];
+
+    for (; index < count; ++index)
+        [staticResourceURLs addObject:staticResources[index].URL()];
+
+    return staticResourceURLs;
+}
+
+- (CPArray)environments
+{
+    return _bundle.environments();
 }
 
 - (CPString)mostEligibleEnvironment
 {
-    return [[self class] mostEligibleEnvironmentFromArray:[self supportedEnvironments]];
+    return _bundle.mostEligibleEnvironment();
 }
 
-- (void)connection:(CPURLConnection)aConnection didReceiveData:(CPString)data
+- (CPString)description
 {
-    if (aConnection === self._infoConnection)
-    {
-        info = CPPropertyListCreateFromData([CPData dataWithString:data]);
-
-        var environment = [self mostEligibleEnvironment];
-
-        if (!environment)
-            throw "Environment not supported for " + [self bundlePath] + ". Supported environments: " + [self objectForInfoDictionaryKey:"CPBundleEnvironments"] + ".";
-
-        [CPURLConnection connectionWithRequest:[CPURLRequest requestWithURL:[self bundlePath] + '/' + environment + ".environment/" + [self objectForInfoDictionaryKey:"CPBundleExecutable"]] delegate:self];
-    }
-    else
-    {
-        objj_decompile([data string], self);
-
-        var context = new objj_context();
-
-        if ([_delegate respondsToSelector:@selector(bundleDidFinishLoading:)])
-            context.didCompleteCallback = function() { [_delegate bundleDidFinishLoading:self]; };
-
-        var files = [[self objectForInfoDictionaryKey:@"CPBundleReplacedFiles"] objectForKey:[self mostEligibleEnvironment]],
-            count = files ? files.length : 0, // Perhaps no files? Be liberal in what you accept...
-            bundlePath = [self bundlePath];
-
-        while (count--)
-        {
-            var fileName = files[count];
-
-            if (fileName.indexOf(".j") === fileName.length - 2)
-                context.pushFragment(fragment_create_file(bundlePath + '/' + fileName, new objj_bundle(""), YES, NULL));
-        }
-
-        if (context.fragments.length)
-            context.evaluate();
-        else
-            [_delegate bundleDidFinishLoading:self];
-    }
-}
-
-- (void)connection:(CPURLConnection)aConnection didFailWithError:(CPError)anError
-{
-    alert("Couldnot find bundle:" + anError)
-}
-
-- (void)connectionDidFinishLoading:(CPURLConnection)aConnection
-{
+    return [super description] + "(" + [self bundlePath] + ")";
 }
 
 @end
-
-objj_bundle.prototype.isa = CPBundle;

@@ -25,13 +25,14 @@
 @import <Foundation/CPNotificationCenter.j>
 @import <Foundation/CPString.j>
 
+@import "_CPMenuManager.j"
 @import "CPApplication.j"
 @import "CPClipView.j"
 @import "CPMenuItem.j"
 @import "CPPanel.j"
 
-#include "CoreGraphics/CGGeometry.h"
-#include "Platform/Platform.h"
+#include "../CoreGraphics/CGGeometry.h"
+#include "../Platform/Platform.h"
 
 
 CPMenuDidAddItemNotification        = @"CPMenuDidAddItemNotification";
@@ -40,7 +41,7 @@ CPMenuDidRemoveItemNotification     = @"CPMenuDidRemoveItemNotification";
 
 CPMenuDidEndTrackingNotification    = @"CPMenuDidEndTrackingNotification";
 
-var MENUBAR_HEIGHT = 19.0;
+var MENUBAR_HEIGHT = 28.0;
 
 var _CPMenuBarVisible               = NO,
     _CPMenuBarTitle                 = @"",
@@ -62,9 +63,12 @@ var _CPMenuBarVisible               = NO,
 
     CPString        _title;
     CPString        _name;
-    
+
+    CPFont          _font;
+
+    float           _minimumWidth;
+
     CPMutableArray  _items;
-    CPMenu          _attachedMenu;
     
     BOOL            _autoenablesItems;
     BOOL            _showsStateColumn;
@@ -89,7 +93,7 @@ var _CPMenuBarVisible               = NO,
 
 + (void)setMenuBarVisible:(BOOL)menuBarShouldBeVisible
 {
-    if (_CPMenuBarVisible == menuBarShouldBeVisible)
+    if (_CPMenuBarVisible === menuBarShouldBeVisible)
         return;
     
     _CPMenuBarVisible = menuBarShouldBeVisible;
@@ -225,7 +229,7 @@ var _CPMenuBarVisible               = NO,
 
 - (float)menuBarHeight
 {
-    if (self == [CPApp mainMenu])
+    if (self === [CPApp mainMenu])
         return MENUBAR_HEIGHT;
     
     return 0.0;
@@ -253,6 +257,8 @@ var _CPMenuBarVisible               = NO,
         
         _autoenablesItems = YES;
         _showsStateColumn = YES;
+
+        [self setMinimumWidth:0];
     }
     
     return self;
@@ -434,7 +440,7 @@ var _CPMenuBarVisible               = NO,
 */
 - (int)indexOfItem:(CPMenuItem)aMenuItem
 {
-    if ([aMenuItem menu] != self)
+    if ([aMenuItem menu] !== self)
         return CPNotFound;
         
     return [_items indexOfObjectIdenticalTo:aMenuItem];
@@ -556,30 +562,6 @@ var _CPMenuBarVisible               = NO,
 }
 
 /*!
-    Returns the attaced menu, or \c nil if there isn't one.
-*/
-- (CPMenu)attachedMenu
-{
-    return _attachedMenu;
-}
-
-/*!
-    Returns \c YES if the menu is attached to another menu.
-*/
-- (BOOL)isAttached
-{
-    return _isAttached;
-}
-
-/*!
-    Not yet implemented
-*/
-- (CGPoint)locationOfSubmenu:(CPMenu)aMenu
-{
-    // FIXME: IMPLEMENT.
-}
-
-/*!
     Returns the super menu or \c nil if there is none.
 */
 - (CPMenu)supermenu
@@ -649,7 +631,147 @@ var _CPMenuBarVisible               = NO,
     return _title;
 }
 
+- (void)setMinimumWidth:(float)aMinimumWidth
+{
+    _minimumWidth = aMinimumWidth;
+}
+
+- (float)minimumWidth
+{
+    return _minimumWidth;
+}
+
+- (void)_performActionOfHighlightedItemChain
+{
+    var highlightedItem = [self highlightedItem];
+
+    while ([highlightedItem submenu] && [highlightedItem action] === @selector(submenuAction:))
+        highlightedItem = [[highlightedItem submenu] highlightedItem];
+
+    // FIXME: It is theoretically not necessarily to check isEnabled here since
+    // highlightedItem is always enabled. Do there exist edge cases: disabling on closing a menu,
+    // etc.? Requires further investigation and tests.
+    if (highlightedItem && [highlightedItem isEnabled])
+        [CPApp sendAction:[highlightedItem action] to:[highlightedItem target] from:highlightedItem];
+}
+
 //
++ (CGRect)_constraintRectForView:(CPView)aView
+{
+    if ([CPPlatform isBrowser])
+        return CGRectInset([[[aView window] platformWindow] contentBounds], 5.0, 5.0);
+
+    return CGRectInset([[[aView window] screen] visibleFrame], 5.0, 5.0);
+}
+
+- (void)popUpMenuPositioningItem:(CPMenuItem)anItem atLocation:(CGPoint)aLocation inView:(CPView)aView callback:(Function)aCallback
+{
+    [self _popUpMenuPositioningItem:anItem
+                         atLocation:aLocation
+                               topY:aLocation.y
+                            bottomY:aLocation.y
+                             inView:aView
+                           callback:aCallback];
+}
+
+- (void)_popUpMenuPositioningItem:(CPMenuItem)anItem atLocation:(CGPoint)aLocation topY:(float)aTopY bottomY:(float)aBottomY inView:(CPView)aView callback:(Function)aCallback
+{
+    var itemIndex = 0;
+
+    if (anItem)
+    {
+        itemIndex = [self indexOfItem:anItem];
+
+        if (itemIndex === CPNotFound)
+            throw   "In call to popUpMenuPositioningItem:atLocation:inView:callback:, menu item " + 
+                    anItem  + " is not present in menu " + self;
+    }
+
+    var theWindow = [aView window];
+
+    if (aView && !theWindow)
+        throw "In call to popUpMenuPositioningItem:atLocation:inView:callback:, view is not in any window.";
+
+    var delegate = [self delegate];
+
+    if ([delegate respondsToSelector:@selector(menuWillOpen:)])
+        [delegate menuWillOpen:aMenu];
+
+    // Convert location to global coordinates if not already in them.
+    if (aView)
+        aLocation = [theWindow convertBaseToGlobal:[aView convertPoint:aLocation toView:nil]];
+
+    // Create the window for our menu.
+    var menuWindow = [_CPMenuWindow menuWindowWithMenu:self font:[self font]];
+
+    [menuWindow setBackgroundStyle:_CPMenuWindowPopUpBackgroundStyle];
+
+    if (anItem)
+        // Don't convert this value to global, we care about the distance (delta) from the
+        // the edge of the window, which is equivalent to its origin.
+        aLocation.y -= [menuWindow deltaYForItemAtIndex:itemIndex];
+
+    // Grab the constraint rect for this view.
+    var constraintRect = [CPMenu _constraintRectForView:aView];
+
+    [menuWindow setFrameOrigin:aLocation];
+    [menuWindow setConstraintRect:constraintRect];
+
+    // If we aren't showing enough items, reposition the view in a better place.
+    if (![menuWindow hasMinimumNumberOfVisibleItems])
+    {
+        var unconstrainedFrame = [menuWindow unconstrainedFrame],
+            unconstrainedY = CGRectGetMinY(unconstrainedFrame);
+
+        // If we scroll to early downwards, or are offscreen (!), move it up.
+        if (unconstrainedY >= CGRectGetMaxY(constraintRect) || [menuWindow canScrollDown])
+        {
+            // Convert this to global if it isn't already.
+            if (aView)
+                aTopY = [theWindow convertBaseToGlobal:[aView convertPoint:CGPointMake(0.0, aTopY) toView:nil]].y;
+
+            unconstrainedFrame.origin.y = MIN(CGRectGetMaxY(constraintRect), aTopY) - CGRectGetHeight(unconstrainedFrame);
+        }
+
+        // If we scroll to early upwards, or are offscreen (!), move it down.
+        else if (unconstrainedY < CGRectGetMinY(constraintRect) || [menuWindow canScrollUp])
+        {
+            // Convert this to global if it isn't already.
+            if (aView)
+                aBottomY = [theWindow convertBaseToGlobal:[aView convertPoint:CGPointMake(0.0, aBottomY) toView:nil]].y;
+
+            unconstrainedFrame.origin.y = MAX(CGRectGetMinY(constraintRect), aBottomY);
+        }
+
+        [menuWindow setFrameOrigin:CGRectIntersection(unconstrainedFrame, constraintRect).origin];
+    }
+
+    // Show it.
+    [menuWindow orderFront:self];
+
+    // Track it.
+    [[_CPMenuManager sharedMenuManager]
+        beginTracking:[CPApp currentEvent]
+        menuContainer:menuWindow
+       constraintRect:constraintRect
+             callback:[CPMenu trackingCallbackWithCallback:aCallback]];
+}
+
++ (Function)trackingCallbackWithCallback:(Function)aCallback
+{
+    return function(aMenuWindow, aMenu)
+    {
+        [aMenuWindow setMenu:nil];
+        [aMenuWindow orderOut:self];
+
+        [_CPMenuWindow poolMenuWindow:aMenuWindow];
+
+        if (aCallback)
+            aCallback(aMenu);
+
+        [aMenu _performActionOfHighlightedItemChain];
+    }
+}
 
 + (void)popUpContextMenu:(CPMenu)aMenu withEvent:(CPEvent)anEvent forView:(CPView)aView
 {
@@ -657,11 +779,6 @@ var _CPMenuBarVisible               = NO,
 }
 
 + (void)popUpContextMenu:(CPMenu)aMenu withEvent:(CPEvent)anEvent forView:(CPView)aView withFont:(CPFont)aFont
-{
-    [self _popUpContextMenu:aMenu withEvent:anEvent forView:aView withFont:aFont forMenuBar:NO];
-}
-
-+ (void)_popUpContextMenu:(CPMenu)aMenu withEvent:(CPEvent)anEvent forView:(CPView)aView withFont:(CPFont)aFont forMenuBar:(BOOL)isForMenuBar
 {
     var delegate = [aMenu delegate];
     
@@ -674,23 +791,38 @@ var _CPMenuBarVisible               = NO,
     var theWindow = [aView window],
         menuWindow = [_CPMenuWindow menuWindowWithMenu:aMenu font:aFont];
 
-    [menuWindow setDelegate:self];
-    [menuWindow setBackgroundStyle:isForMenuBar ? _CPMenuWindowMenuBarBackgroundStyle : _CPMenuWindowPopUpBackgroundStyle];
+    [menuWindow setBackgroundStyle:_CPMenuWindowPopUpBackgroundStyle];
 
-    [menuWindow setFrameOrigin:[[anEvent window] convertBaseToGlobal:[anEvent locationInWindow]]];
+    var constraintRect = [CPMenu _constraintRectForView:aView],
+        aLocation = [[anEvent window] convertBaseToGlobal:[anEvent locationInWindow]];
+
+    [menuWindow setConstraintRect:constraintRect];
+    [menuWindow setFrameOrigin:aLocation];
+
+    // If we aren't showing enough items, reposition the view in a better place.
+    if (![menuWindow hasMinimumNumberOfVisibleItems])
+    {
+        var unconstrainedFrame = [menuWindow unconstrainedFrame],
+            unconstrainedY = CGRectGetMinY(unconstrainedFrame);
+
+        // If we scroll to early downwards, or are offscreen (!), move it up.
+        if (unconstrainedY >= CGRectGetMaxY(constraintRect) || [menuWindow canScrollDown])
+            unconstrainedFrame.origin.y = MIN(CGRectGetMaxY(constraintRect), aLocation.y) - CGRectGetHeight(unconstrainedFrame);
+
+        // If we scroll to early upwards, or are offscreen (!), move it down.
+        else if (unconstrainedY < CGRectGetMinY(constraintRect) || [menuWindow canScrollUp])
+            unconstrainedFrame.origin.y = MAX(CGRectGetMinY(constraintRect), aLocation.y);
+
+        [menuWindow setFrameOrigin:CGRectIntersection(unconstrainedFrame, constraintRect).origin];
+    }
 
     [menuWindow orderFront:self];
-    [menuWindow beginTrackingWithEvent:anEvent sessionDelegate:self didEndSelector:@selector(_menuWindowDidFinishTracking:highlightedItem:)];
-}
 
-+ (void)_menuWindowDidFinishTracking:(_CPMenuWindow)aMenuWindow highlightedItem:(CPMenuItem)aMenuItem
-{
-    var menu = [aMenuWindow menu];
-
-    [_CPMenuWindow poolMenuWindow:aMenuWindow];
-
-    if([aMenuItem isEnabled])
-        [CPApp sendAction:[aMenuItem action] to:[aMenuItem target] from:aMenuItem];
+    [[_CPMenuManager sharedMenuManager]
+        beginTracking:anEvent
+        menuContainer:menuWindow
+       constraintRect:[CPMenu _constraintRectForView:aView]
+             callback:[CPMenu trackingCallbackWithCallback:nil]];
 }
 
 // Managing Display of State Column
@@ -754,12 +886,29 @@ var _CPMenuBarVisible               = NO,
                    subtype:0
                      data1:0
                      data2:0]];
+
+    // FIXME: We need to do this because this happens in a limitDateForMode:, thus
+    // the second limitDateForMode: won't take effect and the perform selector that
+    // actually draws also won't go into effect. In Safari this works because it sends
+    // an additional mouse move after all this, but not in other browsers.
+    // This will be fixed correctly with the coming run loop changes.
+    [_CPDisplayServer run];
 }
 
 /* @ignore */
 - (void)_setMenuWindow:(_CPMenuWindow)aMenuWindow
 {
     _menuWindow = aMenuWindow;
+}
+
+- (void)setFont:(CPFont)aFont
+{
+    _font = aFont;
+}
+
+- (CPFont)font
+{
+    return _font;
 }
 
 /*!
@@ -781,7 +930,16 @@ var _CPMenuBarVisible               = NO,
     for(; index < count; ++index)
     {
         var item = _items[index],
-            modifierMask = [item keyEquivalentModifierMask] | ([item keyEquivalent] === [[item keyEquivalent] uppercaseString] ? CPShiftKeyMask : 0);
+            modifierMask = [item keyEquivalentModifierMask];
+
+        if ([item keyEquivalent] === [[item keyEquivalent] uppercaseString])
+            modifierMask |= CPShiftKeyMask;
+
+        if (CPBrowserIsOperatingSystem(CPWindowsOperatingSystem) && (modifierMask & CPCommandKeyMask))
+        {
+            modifierMask |= CPControlKeyMask;
+            modifierMask &= ~CPCommandKeyMask;
+        }
 
         if ((modifierFlags & (CPShiftKeyMask | CPAlternateKeyMask | CPCommandKeyMask | CPControlKeyMask)) == modifierMask &&
             [characters caseInsensitiveCompare:[item keyEquivalent]] == CPOrderedSame)
@@ -829,14 +987,15 @@ var _CPMenuBarVisible               = NO,
 */
 - (void)_highlightItemAtIndex:(int)anIndex
 {
-    var previousHighlightedIndex = _highlightedIndex;
-    
+    if (_highlightedIndex === anIndex)
+        return;
+
+    if (_highlightedIndex !== CPNotFound)
+        [[_items[_highlightedIndex] _menuItemView] highlight:NO];
+
     _highlightedIndex = anIndex;
-    
-    if (previousHighlightedIndex != CPNotFound)
-        [[_items[previousHighlightedIndex] _menuItemView] highlight:NO];
-    
-    if (_highlightedIndex != CPNotFound)
+
+    if (_highlightedIndex !== CPNotFound)
         [[_items[_highlightedIndex] _menuItemView] highlight:YES];
 }
 
@@ -908,6 +1067,8 @@ var CPMenuTitleKey              = @"CPMenuTitleKey",
         [self _setMenuName:[aCoder decodeObjectForKey:CPMenuNameKey]];
 
         _showsStateColumn = ![aCoder containsValueForKey:CPMenuShowsStateColumnKey] || [aCoder decodeBoolForKey:CPMenuShowsStateColumnKey];
+
+        [self setMinimumWidth:0];
     }
     
     return self;
@@ -932,1083 +1093,6 @@ var CPMenuTitleKey              = @"CPMenuTitleKey",
 
 @end
 
-var _CPMenuWindowPool                       = [],
-    _CPMenuWindowPoolCapacity               = 5,
-    
-    _CPMenuWindowBackgroundColors           = [],
-    
-    _CPMenuWindowScrollingStateUp           = -1,
-    _CPMenuWindowScrollingStateDown         = 1,
-    _CPMenuWindowScrollingStateNone         = 0;
-    
-_CPMenuWindowMenuBarBackgroundStyle         = 0;
-_CPMenuWindowPopUpBackgroundStyle           = 1;
-_CPMenuWindowAttachedMenuBackgroundStyle    = 2;
+@import "_CPMenuBarWindow.j"
+@import "_CPMenuWindow.j"
 
-var STICKY_TIME_INTERVAL        = 500,
-
-    TOP_MARGIN                  = 5.0,
-    LEFT_MARGIN                 = 1.0,
-    RIGHT_MARGIN                = 1.0,
-    BOTTOM_MARGIN               = 5.0,
-    
-    SCROLL_INDICATOR_HEIGHT     = 16.0;
-
-/*
-    @ignore
-*/
-@implementation _CPMenuWindow : CPWindow
-{
-    _CPMenuView         _menuView;
-    CPClipView          _menuClipView;
-    CPView              _lastMouseOverMenuView;
-    
-    CPImageView         _moreAboveView;
-    CPImageView         _moreBelowView;
-    
-    id                  _sessionDelegate;
-    SEL                 _didEndSelector;
-    
-    CPTimeInterval      _startTime;
-    int                 _scrollingState;
-    CGPoint             _lastGlobalLocation;
-    
-    BOOL                _isShowingTopScrollIndicator;
-    BOOL                _isShowingBottomScrollIndicator;
-    BOOL                _trackingCanceled;
-    
-    CGRect              _unconstrainedFrame;
-}
-
-+ (id)menuWindowWithMenu:(CPMenu)aMenu font:(CPFont)aFont
-{
-    var menuWindow = nil;
-    
-    if (_CPMenuWindowPool.length)
-        menuWindow = _CPMenuWindowPool.pop();
-    else
-        menuWindow = [[_CPMenuWindow alloc] init];
-
-    [menuWindow setFont:aFont];
-    [menuWindow setMenu:aMenu];
-
-    return menuWindow;
-}
-
-+ (void)poolMenuWindow:(_CPMenuWindow)aMenuWindow
-{
-    if (!aMenuWindow || _CPMenuWindowPool.length >= _CPMenuWindowPoolCapacity)
-        return;
-    
-    _CPMenuWindowPool.push(aMenuWindow);
-}
-
-+ (void)initialize
-{
-    if (self != [_CPMenuWindow class])
-        return;
-    
-    var bundle = [CPBundle bundleForClass:self];
-    
-    _CPMenuWindowMoreAboveImage = [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowMoreAbove.png"] size:CGSizeMake(38.0, 18.0)];
-    _CPMenuWindowMoreBelowImage = [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowMoreBelow.png"] size:CGSizeMake(38.0, 18.0)];
-}
-
-- (id)init
-{
-    self = [super initWithContentRect:CGRectMakeZero() styleMask:CPBorderlessWindowMask];
-    
-    if (self)
-    {
-        [self setLevel:CPPopUpMenuWindowLevel];
-        [self setHasShadow:YES];
-        [self setShadowStyle:CPMenuWindowShadowStyle];
-        [self setAcceptsMouseMovedEvents:YES];
-        
-        _unconstrainedFrame = CGRectMakeZero();
-        
-        var contentView = [self contentView];
-        
-        _menuView = [[_CPMenuView alloc] initWithFrame:CGRectMakeZero()];
-        
-        _menuClipView = [[CPClipView alloc] initWithFrame:CGRectMake(LEFT_MARGIN, TOP_MARGIN, 0.0, 0.0)];
-        [_menuClipView setDocumentView:_menuView];
-        
-        [contentView addSubview:_menuClipView];
-        
-        _moreAboveView = [[CPImageView alloc] initWithFrame:CGRectMakeZero()];
-        
-        [_moreAboveView setImage:_CPMenuWindowMoreAboveImage];
-        [_moreAboveView setFrameSize:[_CPMenuWindowMoreAboveImage size]];
-        
-        [contentView addSubview:_moreAboveView];
-        
-        _moreBelowView = [[CPImageView alloc] initWithFrame:CGRectMakeZero()];
-    
-        [_moreBelowView setImage:_CPMenuWindowMoreBelowImage];
-        [_moreBelowView setFrameSize:[_CPMenuWindowMoreBelowImage size]];
-        
-        [contentView addSubview:_moreBelowView];
-
-        [self setShadowStyle:CPWindowShadowStyleMenu];
-    }
-    
-    return self;
-}
-
-- (CGFloat)overlapOffsetWidth
-{
-    return LEFT_MARGIN;
-}
-
-- (void)setFont:(CPFont)aFont
-{
-    [_menuView setFont:aFont];
-}
-
-+ (CPColor)backgroundColorForBackgroundStyle:(_CPMenuWindowBackgroundStyle)aBackgroundStyle
-{
-    var color = _CPMenuWindowBackgroundColors[aBackgroundStyle];
-    
-    if (!color)
-    {
-        var bundle = [CPBundle bundleForClass:[self class]];
-
-        if (aBackgroundStyle == _CPMenuWindowPopUpBackgroundStyle)
-            color = [CPColor colorWithPatternImage:[[CPNinePartImage alloc] initWithImageSlices:
-                [
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded0.png"] size:CGSizeMake(4.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow1.png"] size:CGSizeMake(1.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded2.png"] size:CGSizeMake(4.0, 4.0)],
-                    
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow3.png"] size:CGSizeMake(4.0, 1.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow4.png"] size:CGSizeMake(1.0, 1.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow5.png"] size:CGSizeMake(4.0, 1.0)],
-                    
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded6.png"] size:CGSizeMake(4.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow7.png"] size:CGSizeMake(1.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded8.png"] size:CGSizeMake(4.0, 4.0)]
-                ]]];
-        
-        else if (aBackgroundStyle == _CPMenuWindowMenuBarBackgroundStyle)
-            color = [CPColor colorWithPatternImage:[[CPNinePartImage alloc] initWithImageSlices:
-                [
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow3.png"] size:CGSizeMake(4.0, 0.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow4.png"] size:CGSizeMake(1.0, 0.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow5.png"] size:CGSizeMake(4.0, 0.0)],
-                    
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow3.png"] size:CGSizeMake(4.0, 1.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow4.png"] size:CGSizeMake(1.0, 1.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow5.png"] size:CGSizeMake(4.0, 1.0)],
-                    
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded6.png"] size:CGSizeMake(4.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindow7.png"] size:CGSizeMake(1.0, 4.0)],
-                    [[CPImage alloc] initWithContentsOfFile:[bundle pathForResource:@"_CPMenuWindow/_CPMenuWindowRounded8.png"] size:CGSizeMake(4.0, 4.0)]
-                ]]];
-                
-        _CPMenuWindowBackgroundColors[aBackgroundStyle] = color;
-    }
-
-    return color;
-}
-
-- (void)setBackgroundStyle:(_CPMenuWindowBackgroundStyle)aBackgroundStyle
-{
-    [self setBackgroundColor:[[self class] backgroundColorForBackgroundStyle:aBackgroundStyle]];
-}
-
-- (void)setMenu:(CPMenu)aMenu
-{
-    [aMenu _setMenuWindow:self];
-    [_menuView setMenu:aMenu];
-    
-    var menuViewSize = [_menuView frame].size;
-    
-    [self setFrameSize:CGSizeMake(LEFT_MARGIN + menuViewSize.width + RIGHT_MARGIN, TOP_MARGIN + menuViewSize.height + BOTTOM_MARGIN)];
-    
-    [_menuView scrollPoint:CGPointMake(0.0, 0.0)];
-    [_menuClipView setFrame:CGRectMake(LEFT_MARGIN, TOP_MARGIN, menuViewSize.width, menuViewSize.height)];
-}
-
-- (void)setMinWidth:(float)aWidth
-{
-    var size = [self frame].size;
-    
-    [self setFrameSize:CGSizeMake(MAX(size.width, aWidth), size.height)];
-}
-
-- (CGPoint)rectForItemAtIndex:(int)anIndex
-{
-    return [_menuView convertRect:[_menuView rectForItemAtIndex:anIndex] toView:nil];
-}
-
-- (void)orderFront:(id)aSender
-{
-    [self constrainToScreen];
-    
-    [super orderFront:aSender];
-}
-
-- (void)constrainToScreen
-{
-    // FIXME: There are integral window issues with platform windows.
-    // FIXME: This gets called far too often.
-    _unconstrainedFrame = CGRectMakeCopy([self frame]);
-
-    var isBrowser = [CPPlatform isBrowser],
-        visibleFrame =  CGRectInset(isBrowser ? [[self platformWindow] contentBounds] : [[self screen] visibleFrame], 5.0, 5.0),
-        constrainedFrame = CGRectIntersection(_unconstrainedFrame, visibleFrame);
-
-    // We don't want to simply intersect the visible frame and the unconstrained frame.
-    // We should be allowing as much of the width to fit as possible (pushing back and forward).
-    constrainedFrame.origin.x = CGRectGetMinX(_unconstrainedFrame);
-    constrainedFrame.size.width = CGRectGetWidth(_unconstrainedFrame);
-
-    if (CGRectGetWidth(constrainedFrame) > CGRectGetWidth(visibleFrame))
-        constrainedFrame.size.width = CGRectGetWidth(visibleFrame);
-
-    if (CGRectGetMaxX(constrainedFrame) > CGRectGetMaxX(visibleFrame))
-        constrainedFrame.origin.x -= CGRectGetMaxX(constrainedFrame) - CGRectGetMaxX(visibleFrame);
-
-    if (CGRectGetMinX(constrainedFrame) < CGRectGetMinX(visibleFrame))
-        constrainedFrame.origin.x = CGRectGetMinX(visibleFrame);
-
-    // This needs to happen before changing the frame.
-    var menuViewOrigin = [self convertBaseToGlobal:CGPointMake(LEFT_MARGIN, TOP_MARGIN)];
-
-    [super setFrame:constrainedFrame];
-
-    var moreAbove = menuViewOrigin.y < CGRectGetMinY(constrainedFrame) + TOP_MARGIN,
-        moreBelow = menuViewOrigin.y + CGRectGetHeight([_menuView frame]) > CGRectGetMaxY(constrainedFrame) - BOTTOM_MARGIN,
-
-        topMargin = TOP_MARGIN,
-        bottomMargin = BOTTOM_MARGIN,
-        
-        contentView = [self contentView],
-        bounds = [contentView bounds];
-
-    if (moreAbove)
-    {
-        topMargin += SCROLL_INDICATOR_HEIGHT;
-    
-        var frame = [_moreAboveView frame];
-        
-        [_moreAboveView setFrameOrigin:CGPointMake((CGRectGetWidth(bounds) - CGRectGetWidth(frame)) / 2.0, (TOP_MARGIN + SCROLL_INDICATOR_HEIGHT - CGRectGetHeight(frame)) / 2.0)];
-    }
-
-    [_moreAboveView setHidden:!moreAbove];
-
-    if (moreBelow)
-    {
-        bottomMargin += SCROLL_INDICATOR_HEIGHT;
-    
-        [_moreBelowView setFrameOrigin:CGPointMake((CGRectGetWidth(bounds) - CGRectGetWidth([_moreBelowView frame])) / 2.0, CGRectGetHeight(bounds) - SCROLL_INDICATOR_HEIGHT - BOTTOM_MARGIN)];
-    }
-    
-    [_moreBelowView setHidden:!moreBelow];
-
-    var clipFrame = CGRectMake(LEFT_MARGIN, topMargin, CGRectGetWidth(constrainedFrame) - LEFT_MARGIN - RIGHT_MARGIN, CGRectGetHeight(constrainedFrame) - topMargin - bottomMargin)
-
-    [_menuClipView setFrame:clipFrame];
-    [_menuView setFrameSize:CGSizeMake(CGRectGetWidth(clipFrame), CGRectGetHeight([_menuView frame]))];
-
-    [_menuView scrollPoint:CGPointMake(0.0, [self convertBaseToGlobal:clipFrame.origin].y - menuViewOrigin.y)];
-}
-
-- (void)beginTrackingWithEvent:(CPEvent)anEvent sessionDelegate:(id)aSessionDelegate didEndSelector:(SEL)aDidEndSelector
-{
-    CPApp._activeMenu = [_menuView menu];
-
-    _startTime = [anEvent timestamp];//new Date();
-    _scrollingState = _CPMenuWindowScrollingStateNone;
-    _trackingCanceled = NO;
-    
-    _sessionDelegate = aSessionDelegate;
-    _didEndSelector = aDidEndSelector;
-    
-    [self trackEvent:anEvent];
-}
-
-- (void)trackEvent:(CPEvent)anEvent
-{
-    var type = [anEvent type],
-        menu = [_menuView menu];
-
-    // Close Menu Event.
-    if (type === CPAppKitDefined)
-    {
-        // Stop all periodic events at this point.
-        [CPEvent stopPeriodicEvents];
-
-        var highlightedItem = [[_menuView menu] highlightedItem];
-
-        [menu _highlightItemAtIndex:CPNotFound];
-
-        [self orderOut:self];
-
-        var delegate = [menu delegate];
-
-        if ([delegate respondsToSelector:@selector(menuDidClose:)])
-            [delegate menuDidClose:menu];
-
-        if (_sessionDelegate && _didEndSelector)
-            objj_msgSend(_sessionDelegate, _didEndSelector, self, highlightedItem);
-
-        [[CPNotificationCenter defaultCenter]
-            postNotificationName:CPMenuDidEndTrackingNotification
-                          object:menu];
-
-        // Clear these now so its faster next time around.
-        [_menuView setMenu:nil];
-
-        CPApp._activeMenu = nil;
-
-        return;
-    }
-
-    var theWindow = [anEvent window],
-        globalLocation = theWindow ? [theWindow convertBaseToGlobal:[anEvent locationInWindow]] : [anEvent locationInWindow];
-
-    if (type === CPPeriodic)
-    {
-        var constrainedBounds =  CGRectInset([CPPlatform isBrowser] ? [[self platformWindow] contentBounds] : [[self screen] visibleFrame], 5.0, 5.0);
-        
-        if (_scrollingState == _CPMenuWindowScrollingStateUp)
-        {
-            if (CGRectGetMinY(_unconstrainedFrame) < CGRectGetMinY(constrainedBounds))
-                _unconstrainedFrame.origin.y += 10;
-        }
-        else if (_scrollingState == _CPMenuWindowScrollingStateDown)
-            if (CGRectGetMaxY(_unconstrainedFrame) > CGRectGetHeight(constrainedBounds))
-                _unconstrainedFrame.origin.y -= 10;
-                
-        [self setFrame:_unconstrainedFrame];
-        [self constrainToScreen];
-        
-        globalLocation = _lastGlobalLocation;
-    }
-
-    _lastGlobalLocation = globalLocation;
-    
-    var menuLocation = [self convertGlobalToBase:globalLocation],
-        activeItemIndex = [_menuView itemIndexAtPoint:[_menuView convertPoint:menuLocation fromView:nil]],
-        mouseOverMenuView = [[menu itemAtIndex:activeItemIndex] view];
-    
-    // If we're over a custom menu view...
-    if (mouseOverMenuView)
-    {
-        if (!_lastMouseOverMenuView)
-            [menu _highlightItemAtIndex:CPNotFound];
-        
-        if (_lastMouseOverMenuView != mouseOverMenuView)
-        {
-            [mouseOverMenuView mouseExited:anEvent];
-            // FIXME: Possibly multiple of these?
-            [_lastMouseOverMenuView mouseEntered:anEvent];
-            
-            _lastMouseOverMenuView = mouseOverMenuView;
-        }
-        
-        [self sendEvent:[CPEvent mouseEventWithType:type location:menuLocation modifierFlags:[anEvent modifierFlags] 
-            timestamp:[anEvent timestamp] windowNumber:[self windowNumber] context:nil 
-            eventNumber:0 clickCount:[anEvent clickCount] pressure:[anEvent pressure]]];
-    }
-    else
-    {
-        if (_lastMouseOverMenuView)
-        {
-            [_lastMouseOverMenuView mouseExited:anEvent];
-            _lastMouseOverMenuView = nil;
-        }
-        
-        [menu _highlightItemAtIndex:[_menuView itemIndexAtPoint:[_menuView convertPoint:[self convertGlobalToBase:globalLocation] fromView:nil]]];
-        
-        if (type == CPMouseMoved || type == CPLeftMouseDragged || type == CPLeftMouseDown)
-        {
-            var frame = [self frame],
-                oldScrollingState = _scrollingState;
-            
-            _scrollingState = _CPMenuWindowScrollingStateNone;
-            
-            // If we're at or above of the top scroll indicator...
-            if (globalLocation.y < CGRectGetMinY(frame) + TOP_MARGIN + SCROLL_INDICATOR_HEIGHT)
-                _scrollingState = _CPMenuWindowScrollingStateUp;
-        
-            // If we're at or below the bottom scroll indicator...
-            else if (globalLocation.y > CGRectGetMaxY(frame) - BOTTOM_MARGIN - SCROLL_INDICATOR_HEIGHT)
-                _scrollingState = _CPMenuWindowScrollingStateDown;
-            
-            if (_scrollingState != oldScrollingState)
-            
-                if (_scrollingState == _CPMenuWindowScrollingStateNone)
-                    [CPEvent stopPeriodicEvents];
-            
-                else if (oldScrollingState == _CPMenuWindowScrollingStateNone)
-                    [CPEvent startPeriodicEventsAfterDelay:0.0 withPeriod:0.04];
-        }
-        else if (type == CPLeftMouseUp && ([anEvent timestamp] - _startTime > STICKY_TIME_INTERVAL))
-            [menu cancelTracking];
-    }
-
-    [CPApp setTarget:self selector:@selector(trackEvent:) forNextEventMatchingMask:CPPeriodicMask | CPMouseMovedMask | CPLeftMouseDraggedMask | CPLeftMouseUpMask | CPAppKitDefinedMask untilDate:nil inMode:nil dequeue:YES];
-}
-
-@end
-
-/*
-    @ignore
-*/
-@implementation _CPMenuView : CPView
-{
-    CPArray _menuItemViews;
-    CPArray _visibleMenuItemInfos;
-    
-    CPFont  _font;
-}
-
-/*- (id)initWithFrame:(CGRect)aFrame
-{
-    self = [super initWithFrame:aFrame];
-    
-    if (self)
-        [self setAutoresizingMask:CPViewWidthSizable];
-    
-    return self;
-}*/
-
-- (void)setFont:(CPFont)aFont
-{
-    _font = aFont;
-}
-
-- (CGRect)rectForItemAtIndex:(int)anIndex
-{
-    return [_menuItemViews[anIndex == CPNotFound ? 0 : anIndex] frame];
-}
-
-- (int)itemIndexAtPoint:(CGPoint)aPoint
-{
-    var x = aPoint.x,
-        bounds = [self bounds];
-    
-    if (x < CGRectGetMinX(bounds) || x > CGRectGetMaxX(bounds))
-        return CPNotFound;
-    
-    var y = aPoint.y,
-        low = 0,
-        high = _visibleMenuItemInfos.length - 1;
-       
-    while (low <= high)
-    {
-        var middle = FLOOR(low + (high - low) / 2),
-            info = _visibleMenuItemInfos[middle]
-            frame = [info.view frame];
-        
-        if (y < CGRectGetMinY(frame))
-            high = middle - 1;
-        
-        else if (y > CGRectGetMaxY(frame))
-            low = middle + 1;
-        
-        else
-            return info.index;
-   }
-   
-   return CPNotFound;
-}
-
-- (void)setMenu:(CPMenu)aMenu
-{
-    [super setMenu:aMenu];
-    
-    [_menuItemViews makeObjectsPerformSelector:@selector(removeFromSuperview)];   
-    
-    _menuItemViews = [];
-    _visibleMenuItemInfos = [];
-    
-    var menu = [self menu];
-    
-    if (!menu)
-        return;
-    
-    var items = [menu itemArray],
-        index = 0,
-        count = [items count],
-        maxWidth = 0,
-        y = 0,
-        showsStateColumn = [menu showsStateColumn];
-    
-    for (; index < count; ++index)
-    {
-        var item = items[index],
-            view = [item _menuItemView];        
-        
-        _menuItemViews.push(view);
-        
-        if ([item isHidden])
-            continue;
-
-        _visibleMenuItemInfos.push({ view:view, index:index });
-        
-        [view setFont:_font];
-        [view setShowsStateColumn:showsStateColumn];
-        [view synchronizeWithMenuItem];
-                
-        [view setFrameOrigin:CGPointMake(0.0, y)];
-        
-        [self addSubview:view];
-
-        var size = [view minSize],
-            width = size.width;
-        
-        if (maxWidth < width)
-            maxWidth = width;
-        
-        y += size.height;
-    }
-    
-    for (index = 0; index < count; ++index)
-    {
-        var view = _menuItemViews[index];
-        
-        [view setFrameSize:CGSizeMake(maxWidth, CGRectGetHeight([view frame]))];
-    }
-    
-    [self setAutoresizesSubviews:NO];
-    [self setFrameSize:CGSizeMake(maxWidth, y)];
-    [self setAutoresizesSubviews:YES];
-}
-
-@end
-
-var MENUBAR_HEIGHT          = 29.0,
-    MENUBAR_MARGIN          = 10.0,
-    MENUBAR_LEFT_MARGIN     = 10.0,
-    MENUBAR_RIGHT_MARGIN    = 10.0;
-
-var _CPMenuBarWindowBackgroundColor = nil,
-    _CPMenuBarWindowFont            = nil;
-
-@implementation _CPMenuBarWindow : CPPanel
-{
-    CPMenu      _menu;
-    CPView      _highlightView;
-    CPArray     _menuItemViews;
-    
-    CPMenuItem  _trackingMenuItem;
-    
-    CPImageView _iconImageView;
-    CPTextField _titleField;
-    
-    CPColor     _textColor;
-    CPColor     _titleColor;
-    
-    CPColor     _textShadowColor;
-    CPColor     _titleShadowColor;
-    
-    CPColor     _highlightColor;
-    CPColor     _highlightTextColor;
-    CPColor     _highlightTextShadowColor;
-}
-
-+ (void)initialize
-{
-    if (self != [_CPMenuBarWindow class])
-        return;
-        
-    var bundle = [CPBundle bundleForClass:self];
-    
-    _CPMenuBarWindowFont = [CPFont systemFontOfSize:11.0];
-}
-
-- (id)init
-{
-    // This only shows up in browser land, so don't bother calculating metrics in desktop.
-    var contentRect = [[CPPlatformWindow primaryPlatformWindow] contentBounds];
-
-    contentRect.size.height = MENUBAR_HEIGHT;
-
-    self = [super initWithContentRect:contentRect styleMask:CPBorderlessWindowMask];
-
-    if (self)
-    {
-        // FIXME: http://280north.lighthouseapp.com/projects/13294-cappuccino/tickets/39-dont-allow-windows-to-go-above-menubar
-        [self setLevel:-1];//CPTornOffMenuWindowLevel];
-        [self setAutoresizingMask:CPWindowWidthSizable];
-     
-        var contentView = [self contentView];
-        
-        [contentView setAutoresizesSubviews:NO];
-        
-        [self setBecomesKeyOnlyIfNeeded:YES];
-        
-        //
-        _iconImageView = [[CPImageView alloc] initWithFrame:CGRectMake(0.0, 0.0, 16.0, 16.0)];
-        
-        [contentView addSubview:_iconImageView];
-        
-        _titleField = [[CPTextField alloc] initWithFrame:CGRectMakeZero()];
-        
-        [_titleField setFont:[CPFont boldSystemFontOfSize:12.0]];
-        [_titleField setAlignment:CPCenterTextAlignment];
-        [_titleField setTextShadowOffset:CGSizeMake(0, 1)];
-        
-        [contentView addSubview:_titleField];
-    }
-    
-    return self;
-}
-
-- (void)setTitle:(CPString)aTitle
-{
-#if PLATFORM(DOM)
-    var bundleName = [[CPBundle mainBundle] objectForInfoDictionaryKey:@"CPBundleName"];
-
-    if (![bundleName length])
-        document.title = aTitle;
-    else if ([aTitle length])
-        document.title = aTitle + @" - " + bundleName;
-    else
-        document.title = bundleName;
-#endif
-
-    [_titleField setStringValue:aTitle];
-    [_titleField sizeToFit];
-    
-    [self tile];
-}
-
-- (void)setIconImage:(CPImage)anImage
-{
-    [_iconImageView setImage:anImage];
-    [_iconImageView setHidden:anImage == nil];
-
-    [self tile];
-}
-
-- (void)setIconImageAlphaValue:(float)anAlphaValue
-{
-    [_iconImageView setAlphaValue:anAlphaValue];
-}
-
-- (void)setColor:(CPColor)aColor
-{
-    if (!aColor)
-    {
-        if (!_CPMenuBarWindowBackgroundColor)
-            _CPMenuBarWindowBackgroundColor = [CPColor colorWithPatternImage:[[CPImage alloc] initWithContentsOfFile:[[CPBundle bundleForClass:[_CPMenuBarWindow class]] pathForResource:@"_CPMenuBarWindow/_CPMenuBarWindowBackground.png"] size:CGSizeMake(1.0, 18.0)]];
-            
-        [[self contentView] setBackgroundColor:_CPMenuBarWindowBackgroundColor];
-    }
-    else
-        [[self contentView] setBackgroundColor:aColor];
-}
-
-- (void)setTextColor:(CPColor)aColor
-{
-    if (_textColor == aColor)
-        return;
-    
-    _textColor = aColor;
-    
-    [_menuItemViews makeObjectsPerformSelector:@selector(setTextColor:) withObject:_textColor];
-}
-
-- (void)setTitleColor:(CPColor)aColor
-{
-    if (_titleColor == aColor)
-        return;
-    
-    _titleColor = aColor;
-    
-    [_titleField setTextColor:aColor ? aColor : [CPColor blackColor]];
-}
-
-- (void)setTextShadowColor:(CPColor)aColor
-{
-    if (_textShadowColor == aColor)
-        return;
-    
-    _textShadowColor = aColor;
-    
-    [_menuItemViews makeObjectsPerformSelector:@selector(setTextShadowColor:) withObject:_textShadowColor];
-}
-
-- (void)setTitleShadowColor:(CPColor)aColor
-{
-    if (_titleShadowColor == aColor)
-        return;
-    
-    _titleShadowColor = aColor;
-    
-    [_titleField setTextShadowColor:aColor ? aColor : [CPColor whiteColor]];
-}
-
-- (void)setHighlightColor:(CPColor)aColor
-{
-    if (_highlightColor == aColor)
-        return;
-    
-    _highlightColor = aColor;
-}
-
-- (void)setHighlightTextColor:(CPColor)aColor
-{
-    if (_highlightTextColor == aColor)
-        return;
-    
-    _highlightTextColor = aColor;
-    
-    [_menuItemViews makeObjectsPerformSelector:@selector(setActivateColor:) withObject:_highlightTextColor];
-}
-
-- (void)setHighlightTextShadowColor:(CPColor)aColor
-{
-    if (_highlightTextShadowColor == aColor)
-        return;
-    
-    _highlightTextShadowColor = aColor;
-    
-    [_menuItemViews makeObjectsPerformSelector:@selector(setActivateShadowColor:) withObject:_highlightTextShadowColor];
-}
-
-- (void)setMenu:(CPMenu)aMenu
-{
-    if (_menu == aMenu)
-        return;
-    
-    var defaultCenter = [CPNotificationCenter defaultCenter];
-    
-    if (_menu)
-    {
-        [defaultCenter
-            removeObserver:self
-                      name:CPMenuDidAddItemNotification
-                    object:_menu];
-
-        [defaultCenter
-            removeObserver:self
-                      name:CPMenuDidChangeItemNotification
-                    object:_menu];
-
-        [defaultCenter
-            removeObserver:self
-                      name:CPMenuDidRemoveItemNotification
-                    object:_menu];
-                    
-        var items = [_menu itemArray],
-            count = items.length;
-        
-        while (count--)
-            [[items[count] _menuItemView] removeFromSuperview];
-    }
-
-    _menu = aMenu;
-    
-    if (_menu)
-    {
-        [defaultCenter
-            addObserver:self
-              selector:@selector(menuDidAddItem:)
-                  name:CPMenuDidAddItemNotification
-                object:_menu];
-    
-        [defaultCenter
-            addObserver:self
-              selector:@selector(menuDidChangeItem:)
-                  name:CPMenuDidChangeItemNotification
-                object:_menu];
-                
-        [defaultCenter
-            addObserver:self
-              selector:@selector(menuDidRemoveItem:)
-                  name:CPMenuDidRemoveItemNotification
-                object:_menu];
-    }
-    
-    _menuItemViews = [];
-    
-    var contentView = [self contentView],
-        items = [_menu itemArray],
-        count = items.length;
-    
-    for (index = 0; index < count; ++index)
-    {
-        var item = items[index],
-            menuItemView = [item _menuItemView];
-            
-        _menuItemViews.push(menuItemView);
-        
-        [menuItemView setShowsStateColumn:NO];
-        [menuItemView setBelongsToMenuBar:YES];
-        [menuItemView setFont:_CPMenuBarWindowFont];
-        [menuItemView setTextColor:_textColor];
-        [menuItemView setHidden:[item isHidden]];
-        
-        [menuItemView synchronizeWithMenuItem];
-        
-        [contentView addSubview:menuItemView];
-    }
-        
-    [self tile];
-}
-
-- (void)menuDidChangeItem:(CPNotification)aNotification
-{
-    var menuItem = [_menu itemAtIndex:[[aNotification userInfo] objectForKey:@"CPMenuItemIndex"]],
-        menuItemView = [menuItem _menuItemView];
-
-    [menuItemView setHidden:[menuItem isHidden]];
-    [menuItemView synchronizeWithMenuItem];
-    
-    [self tile];
-}
-
-- (void)menuDidAddItem:(CPNotification)aNotification
-{
-    var index = [[aNotification userInfo] objectForKey:@"CPMenuItemIndex"],
-        menuItem = [_menu itemAtIndex:index],
-        menuItemView = [menuItem _menuItemView];
-
-    [_menuItemViews insertObject:menuItemView atIndex:index];
-
-    [menuItemView setShowsStateColumn:NO];
-    [menuItemView setBelongsToMenuBar:YES];
-    [menuItemView setFont:_CPMenuBarWindowFont];
-    [menuItemView setTextColor:_textColor];
-    [menuItemView setHidden:[menuItem isHidden]];
-
-    [menuItemView synchronizeWithMenuItem];
-    
-    [[self contentView] addSubview:menuItemView];
-    
-    [self tile];
-}
-
-- (void)menuDidRemoveItem:(CPNotification)aNotification
-{
-    var index = [[aNotification userInfo] objectForKey:@"CPMenuItemIndex"],
-        menuItemView = [_menuItemViews objectAtIndex:index];
-
-    [_menuItemViews removeObjectAtIndex:index];
-
-    [menuItemView removeFromSuperview];
-        
-    [self tile];
-}
-
-- (CGRect)frameForMenuItem:(CPMenuItem)aMenuItem
-{
-    var frame = [[aMenuItem _menuItemView] frame];
-    
-    frame.origin.x -= 5.0;
-    frame.origin.y = 0;
-    frame.size.width += 10.0;
-    frame.size.height = MENUBAR_HEIGHT;
-    
-    return frame;
-}
-
-- (CPMenuItem)menuItemAtPoint:(CGPoint)aPoint
-{
-    var items = [_menu itemArray],
-        count = items.length;
-    
-    while (count--)
-    {
-        var item = items[count];
-        
-        if ([item isHidden] || [item isSeparatorItem])
-            continue;
-        
-        if (CGRectContainsPoint([self frameForMenuItem:item], aPoint))
-            return item;
-    }
-    
-    return nil;
-}
-
-- (void)mouseDown:(CPEvent)anEvent
-{
-    _trackingMenuItem = [self menuItemAtPoint:[anEvent locationInWindow]];
-    
-    if (![_trackingMenuItem isEnabled])
-        return;
-    
-    if ([[_trackingMenuItem _menuItemView] eventOnSubmenu:anEvent])
-        return [self showMenu:anEvent];
-    
-    if ([_trackingMenuItem isEnabled])
-        [self trackEvent:anEvent];
-}
-
-- (void)trackEvent:(CPEvent)anEvent
-{
-    var type = [anEvent type];
-    
-    if (type === CPPeriodic)
-        return [self showMenu:anEvent];
-    
-    var frame = [self frameForMenuItem:_trackingMenuItem],
-        menuItemView = [_trackingMenuItem _menuItemView],
-        onMenuItemView = CGRectContainsPoint(frame, [anEvent locationInWindow]);
-        
-    if (type == CPLeftMouseDown)
-    {
-        if ([_trackingMenuItem submenu] != nil)
-        {
-            var action = [_trackingMenuItem action];
-
-            // If the item has a submenu, but not direct action, a.k.a. a "pure" menu, simply show the menu.
-            // FIXME: (?) should we use submenuAction: or not?
-            if (!action || action === @selector(submenuAction:))
-                return [self showMenu:anEvent];
-            
-            // If this is a hybrid button/menu, show it in a bit...
-            [CPEvent startPeriodicEventsAfterDelay:0.0 withPeriod:0.5];
-        }
-        
-        [menuItemView highlight:onMenuItemView];
-    }
-    
-    else if (type == CPLeftMouseDragged)
-    {
-        if (!onMenuItemView && [_trackingMenuItem submenu])
-            return [self showMenu:anEvent];
-    
-        [menuItemView highlight:onMenuItemView];
-    }
-    
-    else /*if (type == CPLeftMouseUp)*/
-    {
-        [CPEvent stopPeriodicEvents];
-    
-        [menuItemView highlight:NO];
-        
-        if (onMenuItemView)
-            [CPApp sendAction:[_trackingMenuItem action] to:[_trackingMenuItem target] from:_trackingMenuItem];
-        
-        return;
-    }
-    
-    [CPApp setTarget:self selector:@selector(trackEvent:) forNextEventMatchingMask:CPPeriodicMask | CPLeftMouseDraggedMask | CPLeftMouseUpMask untilDate:nil inMode:nil dequeue:YES];    
-}
-
-- (void)showMenu:(CPEvent)anEvent
-{
-    [CPEvent stopPeriodicEvents];
-    
-    var frame = [self frameForMenuItem:_trackingMenuItem],
-        menuItemView = [_trackingMenuItem _menuItemView];
-    
-    if (!_highlightView)
-    {
-        _highlightView = [[CPView alloc] initWithFrame:frame];
-    
-        [_highlightView setBackgroundColor:_highlightColor ? _highlightColor : [CPColor colorWithRed:95.0/255.0 green:131.0/255.0 blue:185.0/255.0 alpha:1.0]];
-    }
-    else
-        [_highlightView setFrame:frame];
-        
-    [[self contentView] addSubview:_highlightView positioned:CPWindowBelow relativeTo:menuItemView];
-    
-    [menuItemView activate:YES];
-    
-    var submenu = [_trackingMenuItem submenu];
-
-    [[CPNotificationCenter defaultCenter]
-        addObserver:self
-          selector:@selector(menuDidEndTracking:)
-              name:CPMenuDidEndTrackingNotification
-            object:submenu];
-    
-    [CPMenu _popUpContextMenu:submenu
-                    withEvent:[CPEvent mouseEventWithType:CPLeftMouseDown location:CGPointMake(CGRectGetMinX(frame), CGRectGetMaxY(frame))
-                                modifierFlags:[anEvent modifierFlags] timestamp:[anEvent timestamp] windowNumber:[self windowNumber] 
-                                context:nil eventNumber:0 clickCount:[anEvent clickCount] pressure:[anEvent pressure]] 
-                      forView:[self contentView]
-                     withFont:nil
-                   forMenuBar:YES];
-}
-
-- (void)menuDidEndTracking:(CPNotification)aNotification
-{
-    [_highlightView removeFromSuperview];
-    
-    [[_trackingMenuItem _menuItemView] activate:NO];
-    
-    [[CPNotificationCenter defaultCenter]
-        removeObserver:self
-                  name:CPMenuDidEndTrackingNotification
-                object:[aNotification object]];
-}
-
-- (void)tile
-{
-    var items = [_menu itemArray],
-        index = 0,
-        count = items.length,
-        
-        x = MENUBAR_LEFT_MARGIN,
-        y = 0.0,
-        isLeftAligned = YES;
-    
-    for (; index < count; ++index)
-    {
-        var item = items[index];
-        
-        if ([item isSeparatorItem])
-        {
-            x = CGRectGetWidth([self frame]) - MENUBAR_RIGHT_MARGIN;
-            isLeftAligned = NO;
-            
-            continue;
-        }
-        
-         if ([item isHidden])
-            continue;
-
-        var menuItemView = [item _menuItemView],
-            frame = [menuItemView frame];
-        
-        if (isLeftAligned)
-        {
-            [menuItemView setFrameOrigin:CGPointMake(x, (MENUBAR_HEIGHT - 1.0 - CGRectGetHeight(frame)) / 2.0)];
-     
-            x += CGRectGetWidth([menuItemView frame]) + MENUBAR_MARGIN;
-        }
-        else
-        {
-            [menuItemView setFrameOrigin:CGPointMake(x - CGRectGetWidth(frame), (MENUBAR_HEIGHT - 1.0 - CGRectGetHeight(frame)) / 2.0)];
-     
-            x = CGRectGetMinX([menuItemView frame]) - MENUBAR_MARGIN;
-        }
-    }
-    
-    var bounds = [[self contentView] bounds],
-        titleFrame = [_titleField frame];
-    
-    if ([_iconImageView isHidden])
-        [_titleField setFrameOrigin:CGPointMake((CGRectGetWidth(bounds) - CGRectGetWidth(titleFrame)) / 2.0, (CGRectGetHeight(bounds) - CGRectGetHeight(titleFrame)) / 2.0)];
-    else
-    {
-        var iconFrame = [_iconImageView frame],
-            iconWidth = CGRectGetWidth(iconFrame),
-            totalWidth = iconWidth + CGRectGetWidth(titleFrame);
-        
-        [_iconImageView setFrameOrigin:CGPointMake((CGRectGetWidth(bounds) - totalWidth) / 2.0, (CGRectGetHeight(bounds) - CGRectGetHeight(iconFrame)) / 2.0)];
-        [_titleField setFrameOrigin:CGPointMake((CGRectGetWidth(bounds) - totalWidth) / 2.0 + iconWidth, (CGRectGetHeight(bounds) - CGRectGetHeight(titleFrame)) / 2.0)];
-    }
-}
-
-- (void)setFrame:(CGRect)aRect display:(BOOL)shouldDisplay animate:(BOOL)shouldAnimate
-{
-    var size = [self frame].size;
-
-    [super setFrame:aRect display:shouldDisplay animate:shouldAnimate];
-
-    if (!_CGSizeEqualToSize(size, aRect.size))
-        [self tile];
-}
-
-@end
